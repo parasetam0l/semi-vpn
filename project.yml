@@ -1,0 +1,205 @@
+name: semi-vpn
+options:
+  bundleIdPrefix: com.semivpn
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  OpenVPNCore:
+    path: .
+targets:
+  semi-vpn:
+    type: application
+    platform: macOS
+    sources:
+      - App
+      - Shared
+      - path: ChromeExtension
+        type: folder
+        buildPhase: resources
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: SemiVPN
+        CFBundleIconFile: AppIcon
+        CFBundleVersion: "2"
+        LSMinimumSystemVersion: "14.0"
+        NSHighResolutionCapable: true
+        LSApplicationCategoryType: public.app-category.utilities
+        NSDocumentsFolderUsageDescription: "SemiVPN imports the OpenVPN profile (.ovpn) files you select so it can configure your VPN connection."
+        NSDownloadsFolderUsageDescription: "SemiVPN scans your Downloads folder for OpenVPN profile (.ovpn) files so you can import them with one click."
+        NSDesktopFolderUsageDescription: "SemiVPN scans your Desktop for OpenVPN profile (.ovpn) files so you can import them with one click."
+    dependencies:
+      - package: OpenVPNCore
+      - target: TunnelProvider
+        embed: true
+      - target: SemiProxy
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.app
+        PRODUCT_NAME: SemiVPN
+        CODE_SIGN_ENTITLEMENTS: App/semi-vpn.entitlements
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.9"
+        CURRENT_PROJECT_VERSION: "2"
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks $(inherited)"
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: NO
+        OTHER_LDFLAGS: "-L$(TARGET_TEMP_DIR)/OpenSSL"
+    preBuildScripts:
+      - name: Stage OpenSSL
+        script: |
+          set -e
+          SRC=/opt/homebrew/opt/openssl@3/lib
+          STAGE="$TARGET_TEMP_DIR/OpenSSL"
+          mkdir -p "$STAGE"
+          for lib in libssl.3.dylib libcrypto.3.dylib; do
+            ditto "$SRC/$lib" "$STAGE/$lib"
+            install_name_tool -id "@rpath/$lib" "$STAGE/$lib"
+          done
+          install_name_tool -change "$SRC/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$STAGE/libssl.3.dylib" || true
+          install_name_tool -change "$(realpath "$SRC")/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$STAGE/libssl.3.dylib" || true
+        basedOnDependencyAnalysis: false
+    postCompileScripts:
+      - name: Bundle OpenSSL
+        script: |
+          set -e
+          SRC=/opt/homebrew/opt/openssl@3/lib
+          STAGE="$TARGET_TEMP_DIR/OpenSSL"
+          DEST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          mkdir -p "$DEST"
+          for lib in libssl.3.dylib libcrypto.3.dylib; do
+            ditto "$STAGE/$lib" "$DEST/$lib"
+          done
+          for bin in "$TARGET_BUILD_DIR/$EXECUTABLE_PATH" "$TARGET_BUILD_DIR/${EXECUTABLE_PATH}.debug.dylib"; do
+            [ -f "$bin" ] || continue
+            install_name_tool -change "$SRC/libssl.3.dylib" "@rpath/libssl.3.dylib" "$bin" || true
+            install_name_tool -change "$SRC/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$bin" || true
+            install_name_tool -change "$(realpath "$SRC")/libssl.3.dylib" "@rpath/libssl.3.dylib" "$bin" || true
+            install_name_tool -change "$(realpath "$SRC")/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$bin" || true
+          done
+
+          if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ]; then
+            for bin in "$TARGET_BUILD_DIR/$EXECUTABLE_PATH" "$TARGET_BUILD_DIR/${EXECUTABLE_PATH}.debug.dylib"; do
+              [ -f "$bin" ] || continue
+              if [ -n "$CODE_SIGN_ENTITLEMENTS" ]; then
+                codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$CODE_SIGN_ENTITLEMENTS" "$bin" || true
+              else
+                codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$bin" || true
+              fi
+            done
+            for lib in "$DEST"/libssl.3.dylib "$DEST"/libcrypto.3.dylib; do
+              [ -f "$lib" ] && codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$lib" || true
+            done
+            # Re-seal the product after modifying its nested dylibs, so the
+            # bundle signature matches its contents.
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$CODE_SIGN_ENTITLEMENTS" "$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME" || true
+          fi
+        basedOnDependencyAnalysis: false
+  TunnelProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - TunnelProvider/TunnelProvider.swift
+      - Shared
+    dependencies:
+      - package: OpenVPNCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.app.TunnelProvider
+        PRODUCT_NAME: TunnelProvider
+        CODE_SIGN_ENTITLEMENTS: TunnelProvider/TunnelProvider.entitlements
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: TunnelProvider/Info.plist
+        SWIFT_VERSION: "5.9"
+        CURRENT_PROJECT_VERSION: "2"
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks $(inherited)"
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: NO
+        OTHER_LDFLAGS: "-L$(TARGET_TEMP_DIR)/OpenSSL"
+    preBuildScripts:
+      - name: Stage OpenSSL
+        script: |
+          set -e
+          SRC=/opt/homebrew/opt/openssl@3/lib
+          STAGE="$TARGET_TEMP_DIR/OpenSSL"
+          mkdir -p "$STAGE"
+          for lib in libssl.3.dylib libcrypto.3.dylib; do
+            ditto "$SRC/$lib" "$STAGE/$lib"
+            install_name_tool -id "@rpath/$lib" "$STAGE/$lib"
+          done
+          install_name_tool -change "$SRC/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$STAGE/libssl.3.dylib" || true
+          install_name_tool -change "$(realpath "$SRC")/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$STAGE/libssl.3.dylib" || true
+        basedOnDependencyAnalysis: false
+    postCompileScripts:
+      - name: Bundle OpenSSL
+        script: |
+          set -e
+          SRC=/opt/homebrew/opt/openssl@3/lib
+          STAGE="$TARGET_TEMP_DIR/OpenSSL"
+          DEST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          mkdir -p "$DEST"
+          for lib in libssl.3.dylib libcrypto.3.dylib; do
+            ditto "$STAGE/$lib" "$DEST/$lib"
+          done
+          for bin in "$TARGET_BUILD_DIR/$EXECUTABLE_PATH" "$TARGET_BUILD_DIR/${EXECUTABLE_PATH}.debug.dylib"; do
+            [ -f "$bin" ] || continue
+            install_name_tool -change "$SRC/libssl.3.dylib" "@rpath/libssl.3.dylib" "$bin" || true
+            install_name_tool -change "$SRC/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$bin" || true
+            install_name_tool -change "$(realpath "$SRC")/libssl.3.dylib" "@rpath/libssl.3.dylib" "$bin" || true
+            install_name_tool -change "$(realpath "$SRC")/libcrypto.3.dylib" "@rpath/libcrypto.3.dylib" "$bin" || true
+          done
+
+          if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ]; then
+            for bin in "$TARGET_BUILD_DIR/$EXECUTABLE_PATH" "$TARGET_BUILD_DIR/${EXECUTABLE_PATH}.debug.dylib"; do
+              [ -f "$bin" ] || continue
+              if [ -n "$CODE_SIGN_ENTITLEMENTS" ]; then
+                codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$CODE_SIGN_ENTITLEMENTS" "$bin" || true
+              else
+                codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$bin" || true
+              fi
+            done
+            for lib in "$DEST"/libssl.3.dylib "$DEST"/libcrypto.3.dylib; do
+              [ -f "$lib" ] && codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$lib" || true
+            done
+            # Re-seal the product after modifying its nested dylibs, so the
+            # bundle signature matches its contents.
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$CODE_SIGN_ENTITLEMENTS" "$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME" || true
+          fi
+        basedOnDependencyAnalysis: false
+  SemiProxy:
+    type: application
+    platform: macOS
+    sources:
+      - ProxyHelper
+      - App/LocalProxyServer.swift
+      - App/AppLogger.swift
+      - Shared
+    info:
+      path: ProxyHelper/Info.plist
+      properties:
+        LSUIElement: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.proxy
+        PRODUCT_NAME: SemiProxy
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.9"
+        CURRENT_PROJECT_VERSION: "2"
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: NO
+        SKIP_INSTALL: YES
+schemes:
+  semi-vpn:
+    build:
+      targets:
+        semi-vpn: all
+        TunnelProvider: all
+        SemiProxy: all
+    run:
+      config: Debug

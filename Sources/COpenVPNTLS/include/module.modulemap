@@ -1,0 +1,4 @@
+module COpenVPNTLS {
+    header "ovpn_tls.h"
+    export *
+}

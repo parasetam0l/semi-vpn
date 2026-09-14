@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SemiVPN domains</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><img src="icons/icon-32.png" alt=""><span>SemiVPN</span></div>
+    <span id="connection" class="status">VPN: Checking…</span>
+  </header>
+  <main>
+    <section id="browser-mode-warning" class="browser-mode-warning" hidden role="alert" aria-label="Browser routing unavailable">
+      <span class="warning-icon" aria-hidden="true">!</span>
+      <div>
+        <strong>Browser routing unavailable</strong>
+        <small id="browser-mode-warning-detail"></small>
+      </div>
+    </section>
+    <section class="current-site" aria-labelledby="current-site-title">
+      <div class="site-heading">
+        <div class="eyebrow" id="current-site-title">Current site</div>
+        <button id="remove-current" class="remove-current" type="button" hidden aria-label="Remove this domain rule" title="Remove this domain rule">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 5.25h9M6 5.25V3.5h4v1.75m-5.25 0 .5 7.25h5.5l.5-7.25M6.75 7.25v3.5m2.5-3.5v3.5" /></svg>
+        </button>
+      </div>
+      <div id="current-domain" class="current-domain">Checking…</div>
+      <div id="current-site-status" class="site-status-badge" hidden></div>
+      <button id="add-current" class="current primary" type="button" hidden>Add to domain list</button>
+      <div id="current-proxy-state" class="route-panel" hidden>
+        <div class="route-panel-top">
+          <div class="route-state">
+            <span id="current-state-icon" class="state-icon" aria-hidden="true">⏸</span>
+            <div>
+              <div class="eyebrow">Site routing</div>
+              <strong id="current-state">Passive</strong>
+            </div>
+          </div>
+          <button id="current-toggle" class="route-toggle" type="button" role="switch" aria-checked="false" title="Toggle this domain">
+            <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+          </button>
+        </div>
+        <div id="current-state-detail" class="route-detail">Routing is paused for this domain.</div>
+      </div>
+    </section>
+
+    <section class="manual-add-section" aria-label="Add domain manually">
+      <div class="manual-add-header">
+        <span class="eyebrow">Add domain manually</span>
+      </div>
+      <form id="manual-add-form" class="manual-add-form">
+        <div class="manual-input-group">
+          <input type="text" id="manual-domain-input" placeholder="e.g. server.local, 10.0.0.5, or URL" autocomplete="off" spellcheck="false">
+          <button type="submit" id="manual-add-btn" class="manual-add-btn" title="Add to SemiVPN">Add</button>
+        </div>
+        <div id="manual-add-error" class="manual-add-error" hidden></div>
+      </form>
+    </section>
+
+    <p id="error" class="error" hidden></p>
+  </main>
+  <div id="scope-dialog" class="modal-backdrop" hidden>
+    <section class="scope-dialog" role="dialog" aria-modal="true" aria-labelledby="scope-dialog-title" aria-describedby="scope-dialog-description">
+      <div class="dialog-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" /><path d="M2.5 8h11M8 2.5c1.6 1.5 2.2 3.3 2.2 5.5S9.6 12 8 13.5C6.4 12 5.8 10.2 5.8 8S6.4 4 8 2.5Z" /></svg>
+      </div>
+      <div class="eyebrow">Domain scope</div>
+      <h2 id="scope-dialog-title">How much of this site should use SemiVPN?</h2>
+      <p id="scope-dialog-description">Choose whether <strong id="scope-dialog-domain">this domain</strong> should include its subdomains.</p>
+      <div class="scope-choices">
+        <button id="scope-all" class="scope-choice scope-choice-primary" type="button">
+          <span class="scope-choice-copy"><strong>All subdomains</strong><small>Route this domain and every subdomain through SemiVPN.</small></span>
+          <span class="scope-choice-arrow" aria-hidden="true">→</span>
+        </button>
+        <button id="scope-exact" class="scope-choice" type="button">
+          <span class="scope-choice-copy"><strong>Only this site + www</strong><small>Route only the domain and its www variant.</small></span>
+          <span class="scope-choice-arrow" aria-hidden="true">→</span>
+        </button>
+      </div>
+      <button id="scope-cancel" class="dialog-cancel" type="button">Cancel</button>
+    </section>
+  </div>
+  <div id="delete-dialog" class="modal-backdrop" hidden>
+    <section class="scope-dialog delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description">
+      <div class="dialog-icon dialog-icon-danger" aria-hidden="true">
+        <svg viewBox="0 0 16 16"><path d="M3.5 5.25h9M6 5.25V3.5h4v1.75m-5.25 0 .5 7.25h5.5l.5-7.25M6.75 7.25v3.5m2.5-3.5v3.5" /></svg>
+      </div>
+      <div class="eyebrow">Remove rule</div>
+      <h2 id="delete-dialog-title">Remove this domain?</h2>
+      <p id="delete-dialog-description"><strong id="delete-dialog-domain">This domain</strong> will no longer be routed through SemiVPN. You can add it again later.</p>
+      <div class="dialog-actions">
+        <button id="delete-confirm" class="destructive" type="button">Remove domain</button>
+        <button id="delete-cancel" class="dialog-cancel" type="button">Keep domain</button>
+      </div>
+    </section>
+  </div>
+  <footer>
+    <button id="sync" class="secondary">Refresh status</button>
+    <span class="ext-version">v0.1.1</span>
+  </footer>
+  <script src="popup.js"></script>
+</body>
+</html>

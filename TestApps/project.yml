@@ -1,0 +1,45 @@
+name: semi-test
+options:
+  bundleIdPrefix: com.semivpn.test
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+targets:
+  SemiTestA:
+    type: application
+    platform: macOS
+    sources:
+      - TestApp
+    info:
+      path: TestApp/InfoA.plist
+      properties:
+        CFBundleDisplayName: Semi Test A
+        CFBundleName: Semi Test A
+        LSMinimumSystemVersion: "14.0"
+        NSHighResolutionCapable: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.test.a
+        PRODUCT_NAME: SemiTestA
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+  SemiTestB:
+    type: application
+    platform: macOS
+    sources:
+      - TestApp
+    info:
+      path: TestApp/InfoB.plist
+      properties:
+        CFBundleDisplayName: Semi Test B
+        CFBundleName: Semi Test B
+        LSMinimumSystemVersion: "14.0"
+        NSHighResolutionCapable: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.test.b
+        PRODUCT_NAME: SemiTestB
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"

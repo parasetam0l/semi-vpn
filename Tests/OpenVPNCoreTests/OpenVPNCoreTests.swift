@@ -726,7 +726,7 @@ func testTCPPacketFramerZeroLength() {
 @Test("TCP framer keeps partial packets buffered")
 func testTCPPacketFramerPartial() throws {
     let packet = Data([0x41, 0x42, 0x43])
-    var wire = TCPPacketFramer.frame(packet)
+    let wire = TCPPacketFramer.frame(packet)
     var framer = TCPPacketFramer()
 
     let first = try framer.feed(wire.prefix(4))   // header + 2 of 3 payload bytes
@@ -737,3 +737,157 @@ func testTCPPacketFramerPartial() throws {
     #expect(rest == [packet])
     #expect(!framer.hasPartialData)
 }
+
+// MARK: - IPv6 Tests
+
+@Test("ICMPv6Synthesizer generates valid Destination Unreachable packet")
+func testICMPv6SynthesizerBasic() {
+    // Construct a mock IPv6 TCP SYN packet
+    // IPv6 Header (40 bytes)
+    var packet = Data(repeating: 0, count: 40)
+    packet[0] = 0x60 // IPv6, TC=0
+    packet[4] = 0x00 // Payload length = 20 (TCP header)
+    packet[5] = 0x14
+    packet[6] = 6    // Next Header: TCP
+    packet[7] = 64   // Hop Limit
+    // Source: 2001:db8::2
+    packet[8] = 0x20; packet[9] = 0x01; packet[10] = 0x0d; packet[11] = 0xb8
+    packet[23] = 0x02
+    // Dest: 2607:f8b0:4005:805::200e (Google)
+    packet[24] = 0x26; packet[25] = 0x07; packet[26] = 0xf8; packet[27] = 0xb0
+    packet[39] = 0x0e
+    // Append 20 bytes of dummy TCP payload
+    packet.append(Data(repeating: 0xAB, count: 20))
+
+    let response = ICMPv6Synthesizer.makeDestinationUnreachable(
+        invokingPacket: packet,
+        routerIPv6: "fd00:7365:6d69::1",
+        code: 1
+    )
+    #expect(response != nil)
+    guard let response else { return }
+
+    // Outer IPv6 header
+    #expect((response[0] >> 4) == 6)
+    #expect(response[6] == 58) // Next Header: ICMPv6
+    #expect(response[7] == 64) // Hop Limit: 64
+
+    // Destination of ICMPv6 response must be source of invoking packet (2001:db8::2)
+    let replyDst = response.subdata(in: 24..<40)
+    #expect(replyDst[0] == 0x20 && replyDst[1] == 0x01 && replyDst[15] == 0x02)
+
+    // ICMPv6 body
+    let icmpBody = response.subdata(in: 40..<response.count)
+    #expect(icmpBody[0] == 1) // Type 1: Destination Unreachable
+    #expect(icmpBody[1] == 1) // Code 1: Administratively Prohibited
+
+    // Verify ICMPv6 Checksum is valid
+    var pseudoHeader = Data()
+    pseudoHeader.append(response.subdata(in: 8..<24)) // Source IP
+    pseudoHeader.append(response.subdata(in: 24..<40)) // Dest IP
+    var lenBigEndian = UInt32(icmpBody.count).bigEndian
+    withUnsafeBytes(of: &lenBigEndian) { pseudoHeader.append(contentsOf: $0) }
+    pseudoHeader.append(contentsOf: [0x00, 0x00, 0x00, 58])
+
+    var verifyData = Data()
+    verifyData.append(pseudoHeader)
+    verifyData.append(icmpBody)
+    #expect(ICMPv6Synthesizer.calculateChecksum(verifyData) == 0)
+}
+
+@Test("ICMPv6Synthesizer suppresses multicast and error loops")
+func testICMPv6SynthesizerSuppression() {
+    // 1. Packet too short
+    #expect(ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: Data([0x60, 0x00])) == nil)
+
+    // 2. IPv4 packet
+    var v4 = Data(repeating: 0, count: 40)
+    v4[0] = 0x45
+    #expect(ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: v4) == nil)
+
+    // 3. Multicast destination (ff02::1)
+    var mcastDst = Data(repeating: 0, count: 40)
+    mcastDst[0] = 0x60
+    mcastDst[8] = 0x20; mcastDst[9] = 0x01 // valid src
+    mcastDst[24] = 0xFF; mcastDst[25] = 0x02 // mcast dst
+    #expect(ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: mcastDst) == nil)
+
+    // 4. Multicast source (ff02::1)
+    var mcastSrc = Data(repeating: 0, count: 40)
+    mcastSrc[0] = 0x60
+    mcastSrc[8] = 0xFF; mcastSrc[9] = 0x02 // mcast src
+    mcastSrc[24] = 0x20; mcastSrc[25] = 0x01 // valid dst
+    #expect(ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: mcastSrc) == nil)
+
+    // 5. Unspecified source (::)
+    var unspecSrc = Data(repeating: 0, count: 40)
+    unspecSrc[0] = 0x60
+    unspecSrc[24] = 0x20; unspecSrc[25] = 0x01 // valid dst
+    #expect(ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: unspecSrc) == nil)
+
+    // 6. Invoking packet is already an ICMPv6 error message (Next Header 58, Type 1)
+    var icmpErr = Data(repeating: 0, count: 48)
+    icmpErr[0] = 0x60
+    icmpErr[6] = 58 // ICMPv6
+    icmpErr[8] = 0x20; icmpErr[9] = 0x01 // valid src
+    icmpErr[24] = 0x20; icmpErr[25] = 0x01 // valid dst
+    icmpErr[40] = 1 // ICMPv6 Type 1 (Destination Unreachable)
+    #expect(ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: icmpErr) == nil)
+}
+
+@Test("OVPNParser parses IPv6 directives")
+func testOVPNParserIPv6() throws {
+    let config = """
+    client
+    dev tun
+    proto udp
+    remote vpn.example.com 1194
+    ifconfig-ipv6 2001:db8:1::2/64 2001:db8:1::1
+    route-ipv6 2000::/3
+    route-ipv6 2001:db8:2::/64 2001:db8:1::1 100
+    redirect-gateway def1 ipv6
+    dhcp-option DNS6 2001:4860:4860::8888
+    dhcp-option DNS 2606:4700:4700::1111
+    dhcp-option DNS 1.1.1.1
+    """
+    let profile = try OVPNParser().parse(config)
+    #expect(profile.ifconfigIPv6Local == "2001:db8:1::2")
+    #expect(profile.ifconfigIPv6Netbits == 64)
+    #expect(profile.ifconfigIPv6Remote == "2001:db8:1::1")
+    #expect(profile.routesIPv6.count == 2)
+    #expect(profile.routesIPv6[0].prefix == "2000::")
+    #expect(profile.routesIPv6[0].netbits == 3)
+    #expect(profile.routesIPv6[1].prefix == "2001:db8:2::")
+    #expect(profile.routesIPv6[1].netbits == 64)
+    #expect(profile.routesIPv6[1].gateway == "2001:db8:1::1")
+    #expect(profile.routesIPv6[1].metric == 100)
+    #expect(profile.redirectGatewayIPv6 == true)
+    #expect(profile.dnsIPv6Servers.contains("2001:4860:4860::8888"))
+    #expect(profile.dnsIPv6Servers.contains("2606:4700:4700::1111"))
+}
+
+@Test("PushParser parses IPv6 options from PUSH_REPLY")
+func testPushParserIPv6() throws {
+    let payload = Data(
+        "PUSH_REPLY,ifconfig-ipv6 2001:db8:0:123::2/64 2001:db8:0:123::1,route-ipv6 2000::/3,route-ipv6-gateway 2001:db8:0:123::1,redirect-gateway ipv6,dhcp-option DNS6 2001:4860:4860::8888,dhcp-option DNS 2001:4860:4860::8844,dhcp-option DNS 8.8.8.8\0"
+            .utf8
+    )
+    let message = try PushParser.parseReply(payload)
+    guard case .reply(let pushed) = message else {
+        Issue.record("Expected .reply, got \(message)")
+        return
+    }
+    #expect(pushed.ifconfigIPv6Local == "2001:db8:0:123::2")
+    #expect(pushed.ifconfigIPv6Netbits == 64)
+    #expect(pushed.ifconfigIPv6Remote == "2001:db8:0:123::1")
+    #expect(pushed.routeIPv6Gateway == "2001:db8:0:123::1")
+    #expect(pushed.redirectGatewayIPv6 == true)
+    #expect(pushed.routesIPv6.count == 1)
+    #expect(pushed.routesIPv6[0].prefix == "2000::")
+    #expect(pushed.routesIPv6[0].netbits == 3)
+    #expect(pushed.dnsIPv6Servers.count == 2)
+    #expect(pushed.dnsIPv6Servers.contains("2001:4860:4860::8888"))
+    #expect(pushed.dnsIPv6Servers.contains("2001:4860:4860::8844"))
+    #expect(pushed.dnsServers == ["8.8.8.8"])
+}
+

@@ -59,10 +59,19 @@ public enum SharedConfig {
     public struct RuntimeState: Codable {
         public var vpnStatus: String
         public var forwardingAllowed: Bool
+        public var hasVPNIPv6: Bool
 
-        public init(vpnStatus: String = "disconnected", forwardingAllowed: Bool = false) {
+        public init(vpnStatus: String = "disconnected", forwardingAllowed: Bool = false, hasVPNIPv6: Bool = false) {
             self.vpnStatus = vpnStatus
             self.forwardingAllowed = forwardingAllowed
+            self.hasVPNIPv6 = hasVPNIPv6
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            vpnStatus = try container.decodeIfPresent(String.self, forKey: .vpnStatus) ?? "disconnected"
+            forwardingAllowed = try container.decodeIfPresent(Bool.self, forKey: .forwardingAllowed) ?? false
+            hasVPNIPv6 = try container.decodeIfPresent(Bool.self, forKey: .hasVPNIPv6) ?? false
         }
     }
 

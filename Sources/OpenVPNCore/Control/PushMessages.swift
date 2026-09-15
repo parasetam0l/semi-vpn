@@ -19,6 +19,13 @@ public struct PushedOptions: Sendable, Equatable {
     public var topology: String?
     public var dnsServers: [String]
     public var aeadEpoch: Bool
+    public var ifconfigIPv6Local: String?
+    public var ifconfigIPv6Netbits: Int?
+    public var ifconfigIPv6Remote: String?
+    public var routeIPv6Gateway: String?
+    public var routesIPv6: [OVPNProfile.RouteIPv6]
+    public var redirectGatewayIPv6: Bool
+    public var dnsIPv6Servers: [String]
     /// Raw options, for the policy engine (routes, DNS, redirect-gateway...).
     public var raw: [String]
 
@@ -36,6 +43,13 @@ public struct PushedOptions: Sendable, Equatable {
         topology: String? = nil,
         dnsServers: [String] = [],
         aeadEpoch: Bool = false,
+        ifconfigIPv6Local: String? = nil,
+        ifconfigIPv6Netbits: Int? = nil,
+        ifconfigIPv6Remote: String? = nil,
+        routeIPv6Gateway: String? = nil,
+        routesIPv6: [OVPNProfile.RouteIPv6] = [],
+        redirectGatewayIPv6: Bool = false,
+        dnsIPv6Servers: [String] = [],
         raw: [String] = []
     ) {
         self.peerID = peerID
@@ -51,6 +65,13 @@ public struct PushedOptions: Sendable, Equatable {
         self.topology = topology
         self.dnsServers = dnsServers
         self.aeadEpoch = aeadEpoch
+        self.ifconfigIPv6Local = ifconfigIPv6Local
+        self.ifconfigIPv6Netbits = ifconfigIPv6Netbits
+        self.ifconfigIPv6Remote = ifconfigIPv6Remote
+        self.routeIPv6Gateway = routeIPv6Gateway
+        self.routesIPv6 = routesIPv6
+        self.redirectGatewayIPv6 = redirectGatewayIPv6
+        self.dnsIPv6Servers = dnsIPv6Servers
         self.raw = raw
     }
 }
@@ -136,6 +157,48 @@ public enum PushParser {
                     pushed.ifconfigLocal = addresses[1]
                     pushed.ifconfigRemote = addresses[2]
                 }
+            case "ifconfig-ipv6":
+                let addresses = option.split(separator: " ").map(String.init)
+                if addresses.count >= 2 {
+                    let first = addresses[1]
+                    if first.contains("/") {
+                        let parts = first.split(separator: "/", maxSplits: 1).map(String.init)
+                        pushed.ifconfigIPv6Local = parts[0]
+                        pushed.ifconfigIPv6Netbits = parts.count > 1 ? Int(parts[1]) : 64
+                    } else {
+                        pushed.ifconfigIPv6Local = first
+                        pushed.ifconfigIPv6Netbits = 64
+                    }
+                }
+                if addresses.count >= 3 {
+                    pushed.ifconfigIPv6Remote = addresses[2]
+                }
+            case "route-ipv6":
+                let parts = option.split(separator: " ").map(String.init)
+                if parts.count >= 2 {
+                    let prefixPart = parts[1]
+                    var prefix = prefixPart
+                    var netbits = 64
+                    if prefixPart.contains("/") {
+                        let sub = prefixPart.split(separator: "/", maxSplits: 1).map(String.init)
+                        prefix = sub[0]
+                        netbits = sub.count > 1 ? (Int(sub[1]) ?? 64) : 64
+                    }
+                    let gateway = parts.count >= 3 ? parts[2] : nil
+                    let metric = parts.count >= 4 ? Int(parts[3]) : nil
+                    pushed.routesIPv6.append(OVPNProfile.RouteIPv6(
+                        prefix: prefix,
+                        netbits: netbits,
+                        gateway: gateway,
+                        metric: metric
+                    ))
+                }
+            case "route-ipv6-gateway":
+                pushed.routeIPv6Gateway = value
+            case "redirect-gateway":
+                if tokens.contains(where: { $0.lowercased() == "ipv6" }) {
+                    pushed.redirectGatewayIPv6 = true
+                }
             case "route-gateway":
                 pushed.routeGateway = value
             case "topology":
@@ -143,8 +206,14 @@ public enum PushParser {
             case "dns":
                 pushed.dnsServers = tokens.dropFirst().map(String.init)
             case "dhcp-option":
-                if tokens.count >= 3, tokens[1].uppercased() == "DNS" {
-                    pushed.dnsServers.append(String(tokens[2]))
+                if tokens.count >= 3 {
+                    let opt = tokens[1].uppercased()
+                    let val = String(tokens[2])
+                    if opt == "DNS6" || (opt == "DNS" && val.contains(":")) {
+                        pushed.dnsIPv6Servers.append(val)
+                    } else if opt == "DNS" {
+                        pushed.dnsServers.append(val)
+                    }
                 }
             default:
                 break

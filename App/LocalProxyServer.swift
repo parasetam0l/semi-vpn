@@ -149,7 +149,7 @@ final class LocalProxyServer {
         controlListeners.removeAll()
     }
 
-    /// Finds the active point-to-point utun interface assigned an IPv4 address (the SemiVPN tunnel).
+    /// Finds the active point-to-point utun interface assigned an IP address (the SemiVPN tunnel).
     private func findActiveTunnelInterface() -> NWInterface? {
         var address: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&address) == 0, let first = address else { return nil }
@@ -158,7 +158,8 @@ final class LocalProxyServer {
         var tunnelNames: [String] = []
         while let current = cursor {
             let name = String(cString: current.pointee.ifa_name)
-            if name.hasPrefix("utun"), let addr = current.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) {
+            if name.hasPrefix("utun"), let addr = current.pointee.ifa_addr,
+               (addr.pointee.sa_family == UInt8(AF_INET) || addr.pointee.sa_family == UInt8(AF_INET6)) {
                 tunnelNames.append(name)
             }
             cursor = current.pointee.ifa_next
@@ -274,11 +275,6 @@ final class LocalProxyServer {
     }
 
     private func handleProxyRequest(_ request: HTTPRequest, client: NWConnection) {
-        guard canForward() else {
-            sendProxyResponse(status: "503 Service Unavailable", body: "SemiVPN domain routing is not connected.\n", on: client)
-            return
-        }
-
         let target: ProxyTarget?
         if request.method == "CONNECT" {
             target = parseAuthority(request.target, defaultPort: 443)
@@ -286,24 +282,51 @@ final class LocalProxyServer {
             target = parseHTTPURL(request.target)
         }
 
-        guard let target,
-              SharedConfig.domainMatches(
-                  host: target.host,
-                  domains: SharedConfig.loadActiveDomains(),
-                  subdomainDomains: SharedConfig.loadActiveSubdomainDomains()
-              ) else {
-            sendProxyResponse(status: "403 Forbidden", body: "Target is not in SemiVPN's active domain list.\n", on: client)
+        guard let target else {
+            sendProxyResponse(status: "400 Bad Request", body: "Invalid target.\n", on: client)
             return
         }
 
+        let domainConfig = SharedConfig.loadDomainConfiguration()
+        let isConfigured = SharedConfig.domainMatches(
+            host: target.host,
+            domains: domainConfig.domains,
+            subdomainDomains: domainConfig.subdomainDomains
+        )
+        guard isConfigured else {
+            sendProxyResponse(status: "403 Forbidden", body: "Target is not in SemiVPN's domain list.\n", on: client)
+            return
+        }
+
+        let isDomainActive = SharedConfig.domainMatches(
+            host: target.host,
+            domains: domainConfig.activeDomains,
+            subdomainDomains: domainConfig.activeSubdomainDomains
+        )
+        let shouldTunnel = isDomainActive && canForward()
+
         let upstreamParams = NWParameters.tcp
         upstreamParams.preferNoProxies = true
-        // Do not force requiredInterface: NECP policy forbids explicit binding
-        // to per-app utun interfaces and will deny the path.
-        if let tunnelInterface = findActiveTunnelInterface() {
-            AppLogger.log("local proxy: routing \(target.host):\(target.port) (active tunnel: \(tunnelInterface.name))")
+        if shouldTunnel {
+            let hasVPNIPv6 = SharedConfig.loadRuntimeState().hasVPNIPv6
+            if !hasVPNIPv6 {
+                if let ipOptions = upstreamParams.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+                    ipOptions.version = .v4
+                }
+            }
+            // Do not force requiredInterface: NECP policy forbids explicit binding
+            // to per-app utun interfaces and will deny the path.
+            if let tunnelInterface = findActiveTunnelInterface() {
+                AppLogger.log("local proxy: routing \(target.host):\(target.port) (active tunnel: \(tunnelInterface.name))")
+            } else {
+                AppLogger.log("local proxy: warning: no active tunnel interface found for \(target.host):\(target.port)")
+            }
         } else {
-            AppLogger.log("local proxy: warning: no active tunnel interface found for \(target.host):\(target.port)")
+            // Fail-open direct routing: when the VPN is disconnected or domain is paused,
+            // connect directly over the physical network (dual stack) rather than breaking
+            // the user's browser with 503 Service Unavailable / ERR_TUNNEL_CONNECTION_FAILED.
+            let reason = !canForward() ? "VPN disconnected" : "domain paused"
+            AppLogger.log("local proxy: direct bypass for \(target.host):\(target.port) (\(reason))")
         }
 
         let upstream = NWConnection(

@@ -11,8 +11,11 @@ INSTALL_APP="/Applications/SemiVPN.app"
 # Signing identity / team configuration:
 # Provide DEVELOPMENT_TEAM via environment variable, or auto-detect from local keychain.
 DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
+if [[ -z "$DEVELOPMENT_TEAM" ]] && [[ -d "$INSTALL_APP" ]]; then
+    DEVELOPMENT_TEAM="$(codesign -dv "$INSTALL_APP" 2>&1 | awk -F= '$1 == "TeamIdentifier" { print $2; exit }' || true)"
+fi
 if [[ -z "$DEVELOPMENT_TEAM" ]]; then
-    DEVELOPMENT_TEAM="$(security find-identity -p codesigning -v 2>/dev/null | awk -F'(' '/Apple Development/{print $NF}' | tr -d ')' | head -n1 || true)"
+    DEVELOPMENT_TEAM="$(security find-identity -p codesigning -v 2>/dev/null | awk -F'(' '/Apple Development/{print $NF}' | tr -d ')"' | head -n1 || true)"
 fi
 
 if [[ -z "$DEVELOPMENT_TEAM" ]]; then

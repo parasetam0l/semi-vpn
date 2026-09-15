@@ -79,7 +79,7 @@ function pacForDomains(domains, subdomainDomains = domains) {
     " for (var i = 0; i < domains.length; i++) {" +
     "   if (host === domains[i] || host === 'www.' + domains[i] ||" +
     "       (subdomainDomains.indexOf(domains[i]) !== -1 && dnsDomainIs(host, '.' + domains[i]))) {" +
-    "     return 'PROXY [::1]:" + PROXY_PORT + "; PROXY " + PROXY_HOST + ":" + PROXY_PORT + "';" +
+    "     return 'PROXY [::1]:" + PROXY_PORT + "; PROXY " + PROXY_HOST + ":" + PROXY_PORT + "; DIRECT';" +
     "   }" +
     " }" +
     " return 'DIRECT';" +
@@ -92,7 +92,7 @@ async function applyConfiguration(configuration) {
   const mode = routingMode(configuration);
   const forwardingAllowed = configuration.forwardingAllowed === true;
   const browserRoutingEnabled = browserModeEnabled(configuration);
-  const proxyAvailable = browserRoutingEnabled;
+  const proxyAvailable = browserRoutingEnabled && forwardingAllowed;
   const proxyDomains = proxyAvailable ? activeDomains : [];
   const proxySubdomainDomains = proxyAvailable ? activeSubdomainDomains : [];
   await setProxy({
@@ -112,7 +112,7 @@ async function applyConfiguration(configuration) {
     updatedAt: configuration.updatedAt || null,
     lastSyncSucceeded: true
   });
-  updateAllActiveTabBadges();
+  updateAllActiveTabBadges().catch(() => {});
   return {
     ...normalized,
     routingMode: mode,
@@ -157,8 +157,9 @@ async function syncFromAppNow() {
     // API hiccup. A stale list can fail closed at the local proxy; a DIRECT
     // fallback could bypass the user's selected-domain policy.
     const cached = normalizeDomainConfiguration(await getStoredConfiguration());
+    const cachedForwardingAllowed = cached.forwardingAllowed === true;
     const cachedBrowserRoutingEnabled = cached.browserRoutingEnabled === true || browserModeEnabled(cached);
-    const cachedProxyAvailable = cachedBrowserRoutingEnabled;
+    const cachedProxyAvailable = cachedBrowserRoutingEnabled && cachedForwardingAllowed;
     const cachedDomains = cachedProxyAvailable ? cached.activeDomains : [];
     const cachedProxySubdomainDomains = cachedProxyAvailable ? cached.activeSubdomainDomains : [];
     await setProxy({
@@ -169,12 +170,14 @@ async function syncFromAppNow() {
       ...cached,
       routingMode: routingMode(cached),
       browserRoutingEnabled: cachedBrowserRoutingEnabled,
+      forwardingAllowed: cachedForwardingAllowed,
       lastSyncSucceeded: false
     });
     return {
       ...cached,
       routingMode: routingMode(cached),
       browserRoutingEnabled: cachedBrowserRoutingEnabled,
+      forwardingAllowed: cachedForwardingAllowed,
       lastSyncSucceeded: false,
       error: error.message
     };
@@ -187,6 +190,16 @@ function syncFromApp() {
   const next = syncChain.then(() => syncFromAppNow());
   syncChain = next.catch(() => {});
   return next;
+}
+
+let lastSyncTimestamp = 0;
+function maybeSyncFromApp(throttleMs = 5000) {
+  const now = Date.now();
+  if (now - lastSyncTimestamp > throttleMs) {
+    lastSyncTimestamp = now;
+    return syncFromApp();
+  }
+  return Promise.resolve();
 }
 
 // Track navigation targets per tab (including in-flight and failed requests)
@@ -231,6 +244,7 @@ async function removeTabTarget(tabId) {
 
 if (chrome.webNavigation) {
   chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+    maybeSyncFromApp();
     if (details.frameId === 0 && isHttpOrHttps(details.url)) {
       saveTabTarget(details.tabId, {
         url: details.url,
@@ -286,68 +300,68 @@ function matchingDomain(hostname, domains = [], subdomainDomains = domains) {
 async function updateBadgeForTab(tabId, url) {
   if (!tabId || tabId < 0) return;
 
-  if (!url) {
-    try {
+  try {
+    if (!url) {
       const tab = await chrome.tabs.get(tabId);
       url = tab?.url || tab?.pendingUrl;
-    } catch (_e) {
+    }
+
+    if (!url || !isHttpOrHttps(url)) {
+      await chrome.action.setBadgeText({ text: "", tabId });
+      await chrome.action.setTitle({ title: "SemiVPN Domain Routing", tabId });
       return;
     }
-  }
 
-  if (!url || !isHttpOrHttps(url)) {
-    chrome.action.setBadgeText({ text: "", tabId });
-    chrome.action.setTitle({ title: "SemiVPN Domain Routing", tabId });
-    return;
-  }
+    let hostname = null;
+    try {
+      hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    } catch (_e) {
+      await chrome.action.setBadgeText({ text: "", tabId });
+      return;
+    }
 
-  let hostname = null;
-  try {
-    hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    const config = await getStoredConfiguration();
+    const normalized = normalizeDomainConfiguration(config);
+    const { domains, inactiveDomains, subdomainDomains, activeDomains, activeSubdomainDomains } = normalized;
+
+    const matchedDomain = matchingDomain(hostname, domains, subdomainDomains);
+    if (!matchedDomain) {
+      // Direct site: clean toolbar icon with no badge
+      await chrome.action.setBadgeText({ text: "", tabId });
+      await chrome.action.setTitle({ title: `SemiVPN: Direct (${hostname})`, tabId });
+      return;
+    }
+
+    const isDomainActive = activeDomains.includes(matchedDomain) && hostMatchesDomain(hostname, matchedDomain, activeSubdomainDomains);
+    const isPaused = !isDomainActive;
+    const isBrowserMode = browserModeEnabled(config);
+    const isForwardingAllowed = config.forwardingAllowed === true;
+
+    if (isPaused) {
+      await chrome.action.setBadgeText({ text: "OFF", tabId });
+      await chrome.action.setBadgeBackgroundColor({ color: "#f59e0b", tabId }); // Amber
+      if (chrome.action.setBadgeTextColor) {
+        await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
+      }
+      await chrome.action.setTitle({ title: `SemiVPN: Paused for ${hostname}`, tabId });
+    } else if (isBrowserMode && isForwardingAllowed) {
+      await chrome.action.setBadgeText({ text: "ON", tabId });
+      await chrome.action.setBadgeBackgroundColor({ color: "#10b981", tabId }); // Emerald green
+      if (chrome.action.setBadgeTextColor) {
+        await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
+      }
+      await chrome.action.setTitle({ title: `SemiVPN: Active (${hostname} -> VPN)`, tabId });
+    } else {
+      // In domain list, but VPN is disconnected
+      await chrome.action.setBadgeText({ text: "DISC", tabId });
+      await chrome.action.setBadgeBackgroundColor({ color: "#6b7280", tabId }); // Gray
+      if (chrome.action.setBadgeTextColor) {
+        await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
+      }
+      await chrome.action.setTitle({ title: `SemiVPN: Disconnected (${hostname})`, tabId });
+    }
   } catch (_e) {
-    chrome.action.setBadgeText({ text: "", tabId });
-    return;
-  }
-
-  const config = await getStoredConfiguration();
-  const normalized = normalizeDomainConfiguration(config);
-  const { domains, inactiveDomains, subdomainDomains, activeDomains, activeSubdomainDomains } = normalized;
-
-  const matchedDomain = matchingDomain(hostname, domains, subdomainDomains);
-  if (!matchedDomain) {
-    // Direct site: clean toolbar icon with no badge
-    chrome.action.setBadgeText({ text: "", tabId });
-    chrome.action.setTitle({ title: `SemiVPN: Direct (${hostname})`, tabId });
-    return;
-  }
-
-  const isDomainActive = activeDomains.includes(matchedDomain) && hostMatchesDomain(hostname, matchedDomain, activeSubdomainDomains);
-  const isPaused = !isDomainActive;
-  const isBrowserMode = browserModeEnabled(config);
-  const isForwardingAllowed = config.forwardingAllowed === true;
-
-  if (isPaused) {
-    chrome.action.setBadgeText({ text: "OFF", tabId });
-    chrome.action.setBadgeBackgroundColor({ color: "#f59e0b", tabId }); // Amber
-    if (chrome.action.setBadgeTextColor) {
-      chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
-    }
-    chrome.action.setTitle({ title: `SemiVPN: Paused for ${hostname}`, tabId });
-  } else if (isBrowserMode && isForwardingAllowed) {
-    chrome.action.setBadgeText({ text: "ON", tabId });
-    chrome.action.setBadgeBackgroundColor({ color: "#10b981", tabId }); // Emerald green
-    if (chrome.action.setBadgeTextColor) {
-      chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
-    }
-    chrome.action.setTitle({ title: `SemiVPN: Active (${hostname} -> VPN)`, tabId });
-  } else {
-    // In domain list, but VPN is disconnected
-    chrome.action.setBadgeText({ text: "DISC", tabId });
-    chrome.action.setBadgeBackgroundColor({ color: "#6b7280", tabId }); // Gray
-    if (chrome.action.setBadgeTextColor) {
-      chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
-    }
-    chrome.action.setTitle({ title: `SemiVPN: Disconnected (${hostname})`, tabId });
+    // If the tab was closed or does not exist, ignore gracefully
   }
 }
 
@@ -355,7 +369,9 @@ async function updateAllActiveTabBadges() {
   try {
     const tabs = await chrome.tabs.query({ active: true });
     for (const tab of tabs) {
-      if (tab.id) updateBadgeForTab(tab.id, tab.url);
+      if (tab.id) {
+        updateBadgeForTab(tab.id, tab.url).catch(() => {});
+      }
     }
   } catch (_e) {}
 }
@@ -363,14 +379,15 @@ async function updateAllActiveTabBadges() {
 if (chrome.tabs) {
   if (chrome.tabs.onActivated) {
     chrome.tabs.onActivated.addListener((activeInfo) => {
-      updateBadgeForTab(activeInfo.tabId);
+      maybeSyncFromApp().catch(() => {});
+      updateBadgeForTab(activeInfo.tabId).catch(() => {});
     });
   }
 
   if (chrome.tabs.onUpdated) {
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (changeInfo.url || changeInfo.status === "complete") {
-        updateBadgeForTab(tabId, tab?.url || changeInfo.url);
+        updateBadgeForTab(tabId, tab?.url || changeInfo.url).catch(() => {});
       }
     });
   }

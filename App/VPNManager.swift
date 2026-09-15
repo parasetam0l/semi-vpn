@@ -490,12 +490,59 @@ final class VPNManager: ObservableObject {
         return rules
     }
 
+    private var activeProfileHasIPv6: Bool {
+        guard let selection,
+              let profileText = SharedConfig.loadProfile(name: selection.profileName),
+              let profile = try? OVPNParser().parse(profileText) else {
+            return false
+        }
+        return profile.ifconfigIPv6Local != nil
+    }
+
     private func updateProxyAvailability() {
         let isForwardingAllowed = status == .connected && (selection?.domainRouting == true || selection?.routingMode.includesBrowser == true)
         SharedConfig.saveRuntimeState(SharedConfig.RuntimeState(
             vpnStatus: Self.displayStatus(for: status),
-            forwardingAllowed: isForwardingAllowed
+            forwardingAllowed: isForwardingAllowed,
+            hasVPNIPv6: activeProfileHasIPv6
         ))
+        NotificationCenter.default.post(
+            name: SharedConfig.domainConfigurationDidChangeNotification,
+            object: nil
+        )
+        DistributedNotificationCenter.default().postNotificationName(
+            NSNotification.Name("com.semivpn.app.domainConfigurationDidChange"),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+
+        if status == .connected, let session = tunnelManager?.connection as? NETunnelProviderSession {
+            try? session.sendProviderMessage(Data("status".utf8)) { response in
+                guard let response,
+                      let json = try? JSONSerialization.jsonObject(with: response) as? [String: String] else {
+                    return
+                }
+                let tunnelHasIPv6 = json["hasVPNIPv6"] == "true"
+                DispatchQueue.main.async {
+                    SharedConfig.saveRuntimeState(SharedConfig.RuntimeState(
+                        vpnStatus: Self.displayStatus(for: session.status),
+                        forwardingAllowed: isForwardingAllowed,
+                        hasVPNIPv6: tunnelHasIPv6
+                    ))
+                    NotificationCenter.default.post(
+                        name: SharedConfig.domainConfigurationDidChangeNotification,
+                        object: nil
+                    )
+                    DistributedNotificationCenter.default().postNotificationName(
+                        NSNotification.Name("com.semivpn.app.domainConfigurationDidChange"),
+                        object: nil,
+                        userInfo: nil,
+                        deliverImmediately: true
+                    )
+                }
+            }
+        }
     }
 
     private static func displayStatus(for status: NEVPNStatus) -> String {

@@ -22,7 +22,8 @@ targets:
       properties:
         CFBundleDisplayName: SemiVPN
         CFBundleIconFile: AppIcon
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: "1.1"
+        CFBundleVersion: "3"
         LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.utilities
@@ -42,7 +43,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/semi-vpn.entitlements
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "3"
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks $(inherited)"
@@ -115,7 +117,8 @@ targets:
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: TunnelProvider/Info.plist
         SWIFT_VERSION: "5.9"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "3"
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks $(inherited)"
@@ -190,7 +193,8 @@ targets:
         PRODUCT_NAME: SemiProxy
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "3"
         ARCHS: arm64
         ONLY_ACTIVE_ARCH: NO
         SKIP_INSTALL: YES

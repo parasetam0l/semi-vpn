@@ -461,9 +461,15 @@ async function addCurrentDomain(domain, includeSubdomains, navigateUrl = null) {
     const reloadUrl = navigateUrl || (activeTabTargetUrl && (activeTabTargetUrl.includes(domain) || activeTabIsUnreachable) ? activeTabTargetUrl : null);
     if (activeTabId) {
       if (reloadUrl) {
-        chrome.tabs.update(activeTabId, { url: reloadUrl });
+        try {
+          const p = chrome.tabs.update(activeTabId, { url: reloadUrl });
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch (_e) {}
       } else if (currentHostname && (currentHostname === domain || currentHostname.endsWith("." + domain))) {
-        chrome.tabs.reload(activeTabId);
+        try {
+          const p = chrome.tabs.reload(activeTabId);
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch (_e) {}
       }
     }
 
@@ -513,7 +519,10 @@ async function toggleCurrentDomain(domain, enabled) {
     await syncPAC();
     await refresh(domainConfiguration, currentHostname);
     if (enabled && activeTabId && currentHostname && (currentHostname === domain || currentHostname.endsWith("." + domain))) {
-      chrome.tabs.reload(activeTabId);
+      try {
+        const p = chrome.tabs.reload(activeTabId);
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } catch (_e) {}
     }
     showError("");
   } catch (error) {

@@ -106,10 +106,21 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
             guard let self else { return }
             self.readingPackets = false
             guard let connection = self.connection else { return }
+            let hasVPNIPv6 = connection.hasVPNIPv6
             for packet in packets {
+                let isIPv6 = packet.count > 0 && (packet[0] >> 4) == 6
+                if isIPv6 && !hasVPNIPv6 {
+                    // IPv6 Leak Protection: do not forward packet into the IPv4-only OpenVPN tunnel.
+                    // Synthesize ICMPv6 Destination Unreachable so Happy Eyeballs
+                    // immediately falls back to IPv4 without waiting for a connection timeout.
+                    if let icmpReply = ICMPv6Synthesizer.makeDestinationUnreachable(invokingPacket: packet) {
+                        self.packetFlow.writePackets([icmpReply], withProtocols: [NSNumber(value: AF_INET6)])
+                    }
+                    continue
+                }
                 self.sentPacketCount &+= 1
                 if self.sentPacketCount == 1 || self.sentPacketCount % 100 == 0 {
-                    self.log("tunnel outbound: packet #\(self.sentPacketCount) (\(packet.count) bytes)")
+                    self.log("tunnel outbound: packet #\(self.sentPacketCount) (\(packet.count) bytes, ipv6=\(isIPv6))")
                 }
                 connection.sendIPPacket(packet)
             }
@@ -129,10 +140,14 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         let localIP = connection?.pushedOptions?.ifconfigLocal ?? ""
+        let localIPv6 = connection?.pushedOptions?.ifconfigIPv6Local ?? connection?.profile.ifconfigIPv6Local ?? ""
+        let hasVPNIPv6 = connection?.hasVPNIPv6 ?? false
         let ifaceName = Self.findTunnelInterfaceName(forIP: localIP) ?? ""
         let info: [String: String] = [
             "interface": ifaceName,
             "ip": localIP,
+            "ipv6": hasVPNIPv6 ? localIPv6 : ICMPv6Synthesizer.defaultTunnelIPv6,
+            "hasVPNIPv6": hasVPNIPv6 ? "true" : "false",
             "gateway": connection?.pushedOptions?.routeGateway ?? ""
         ]
         completionHandler?(try? JSONSerialization.data(withJSONObject: info))
@@ -145,7 +160,8 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
         var cursor: UnsafeMutablePointer<ifaddrs>? = first
         while let current = cursor {
             let name = String(cString: current.pointee.ifa_name)
-            if name.hasPrefix("utun"), let addr = current.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) {
+            if name.hasPrefix("utun"), let addr = current.pointee.ifa_addr,
+               (addr.pointee.sa_family == UInt8(AF_INET) || addr.pointee.sa_family == UInt8(AF_INET6)) {
                 var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 getnameinfo(addr, socklen_t(addr.pointee.sa_len), &hostBuffer, socklen_t(hostBuffer.count), nil, 0, NI_NUMERICHOST)
                 let ip = String(cString: hostBuffer)
@@ -262,11 +278,61 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
                 route.gatewayAddress = remote
                 return route
             }
+            var dnsList = pushed.dnsServers
+            if connection.hasVPNIPv6 {
+                dnsList.append(contentsOf: pushed.dnsIPv6Servers)
+            }
             settings.dnsSettings = NEDNSSettings(
-                servers: pushed.dnsServers.isEmpty ? ["1.1.1.1"] : pushed.dnsServers
+                servers: dnsList.isEmpty ? ["1.1.1.1"] : dnsList
             )
         }
         settings.ipv4Settings = ipv4
+
+        let hasVPNIPv6 = connection.hasVPNIPv6
+        let localIPv6 = pushed.ifconfigIPv6Local ?? connection.profile.ifconfigIPv6Local
+        let netbitsIPv6 = pushed.ifconfigIPv6Netbits ?? connection.profile.ifconfigIPv6Netbits ?? 64
+        let remoteIPv6 = pushed.ifconfigIPv6Remote ?? connection.profile.ifconfigIPv6Remote
+
+        if hasVPNIPv6, let localIPv6 {
+            log("configuring dual-stack IPv6 tunnel: local=\(localIPv6)/\(netbitsIPv6) remote=\(remoteIPv6 ?? "nil")")
+            let ipv6 = NEIPv6Settings(addresses: [localIPv6], networkPrefixLengths: [NSNumber(value: netbitsIPv6)])
+            if scopedRouting {
+                let defaultRoute = NEIPv6Route.default()
+                if let remoteIPv6 {
+                    defaultRoute.gatewayAddress = remoteIPv6
+                }
+                ipv6.includedRoutes = [defaultRoute]
+            } else if !pushed.routesIPv6.isEmpty {
+                ipv6.includedRoutes = pushed.routesIPv6.map { r in
+                    let route = NEIPv6Route(destinationAddress: r.prefix, networkPrefixLength: NSNumber(value: r.netbits))
+                    if let gw = r.gateway ?? remoteIPv6 {
+                        route.gatewayAddress = gw
+                    }
+                    return route
+                }
+            } else if let remoteIPv6 {
+                let defaultRoute = NEIPv6Route.default()
+                defaultRoute.gatewayAddress = remoteIPv6
+                ipv6.includedRoutes = [defaultRoute]
+            }
+            settings.ipv6Settings = ipv6
+        } else {
+            // IPv6 Leak Protection:
+            // When the VPN server does not support IPv6, configure utun with a Unique Local
+            // Address (ULA) and capture all IPv6 traffic inside the scoped tunnel.
+            // When IPv6 packets arrive, readPackets replies with ICMPv6 Destination Unreachable,
+            // immediately causing Happy Eyeballs to use IPv4 via the VPN and preventing any leak to en0.
+            log("configuring IPv6 leak protection: blackhole ULA tunnel with ICMPv6 rejection")
+            let leakProtectionIPv6 = NEIPv6Settings(
+                addresses: [ICMPv6Synthesizer.defaultTunnelIPv6],
+                networkPrefixLengths: [128]
+            )
+            if scopedRouting {
+                leakProtectionIPv6.includedRoutes = [NEIPv6Route.default()]
+            }
+            settings.ipv6Settings = leakProtectionIPv6
+        }
+
         settings.mtu = 1500
 
         setTunnelNetworkSettings(settings) { [weak self] error in

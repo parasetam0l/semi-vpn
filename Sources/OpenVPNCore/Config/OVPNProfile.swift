@@ -103,6 +103,29 @@ public struct OVPNProfile: Sendable {
     public var requiresAuthUserPass: Bool
     public var authUserPass: AuthUserPass?
 
+    // MARK: - IPv6 configuration
+
+    public struct RouteIPv6: Sendable, Equatable {
+        public var prefix: String
+        public var netbits: Int
+        public var gateway: String?
+        public var metric: Int?
+
+        public init(prefix: String, netbits: Int = 64, gateway: String? = nil, metric: Int? = nil) {
+            self.prefix = prefix
+            self.netbits = netbits
+            self.gateway = gateway
+            self.metric = metric
+        }
+    }
+
+    public var ifconfigIPv6Local: String?
+    public var ifconfigIPv6Netbits: Int?
+    public var ifconfigIPv6Remote: String?
+    public var routesIPv6: [RouteIPv6]
+    public var redirectGatewayIPv6: Bool
+    public var dnsIPv6Servers: [String]
+
     // MARK: - Misc
 
     public var nobind: Bool
@@ -134,6 +157,12 @@ public struct OVPNProfile: Sendable {
         x509NameCheck: X509NameCheck? = nil,
         requiresAuthUserPass: Bool = false,
         authUserPass: AuthUserPass? = nil,
+        ifconfigIPv6Local: String? = nil,
+        ifconfigIPv6Netbits: Int? = nil,
+        ifconfigIPv6Remote: String? = nil,
+        routesIPv6: [RouteIPv6] = [],
+        redirectGatewayIPv6: Bool = false,
+        dnsIPv6Servers: [String] = [],
         nobind: Bool = false,
         persistKey: Bool = false,
         persistTun: Bool = false,
@@ -160,6 +189,12 @@ public struct OVPNProfile: Sendable {
         self.x509NameCheck = x509NameCheck
         self.requiresAuthUserPass = requiresAuthUserPass
         self.authUserPass = authUserPass
+        self.ifconfigIPv6Local = ifconfigIPv6Local
+        self.ifconfigIPv6Netbits = ifconfigIPv6Netbits
+        self.ifconfigIPv6Remote = ifconfigIPv6Remote
+        self.routesIPv6 = routesIPv6
+        self.redirectGatewayIPv6 = redirectGatewayIPv6
+        self.dnsIPv6Servers = dnsIPv6Servers
         self.nobind = nobind
         self.persistKey = persistKey
         self.persistTun = persistTun

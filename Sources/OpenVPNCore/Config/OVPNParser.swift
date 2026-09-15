@@ -189,6 +189,56 @@ public struct OVPNParser: Sendable {
                 profile.replayWindow = window
             }
 
+        case "ifconfig-ipv6":
+            if let first = args.first {
+                if first.contains("/") {
+                    let parts = first.split(separator: "/", maxSplits: 1).map(String.init)
+                    profile.ifconfigIPv6Local = parts[0]
+                    profile.ifconfigIPv6Netbits = parts.count > 1 ? Int(parts[1]) : 64
+                } else {
+                    profile.ifconfigIPv6Local = first
+                    profile.ifconfigIPv6Netbits = 64
+                }
+            }
+            if args.count > 1 {
+                profile.ifconfigIPv6Remote = args[1]
+            }
+
+        case "route-ipv6":
+            if let first = args.first {
+                var prefix = first
+                var netbits = 64
+                if first.contains("/") {
+                    let parts = first.split(separator: "/", maxSplits: 1).map(String.init)
+                    prefix = parts[0]
+                    netbits = parts.count > 1 ? (Int(parts[1]) ?? 64) : 64
+                }
+                let gateway = args.count > 1 ? args[1] : nil
+                let metric = args.count > 2 ? Int(args[2]) : nil
+                profile.routesIPv6.append(OVPNProfile.RouteIPv6(
+                    prefix: prefix,
+                    netbits: netbits,
+                    gateway: gateway,
+                    metric: metric
+                ))
+            }
+
+        case "redirect-gateway":
+            if args.contains(where: { $0.lowercased() == "ipv6" }) {
+                profile.redirectGatewayIPv6 = true
+            }
+            appendRaw(directive: raw, args: args, to: &profile)
+
+        case "dhcp-option":
+            if args.count >= 2 {
+                let optType = args[0].uppercased()
+                let optVal = args[1]
+                if optType == "DNS6" || (optType == "DNS" && optVal.contains(":")) {
+                    profile.dnsIPv6Servers.append(optVal)
+                }
+            }
+            appendRaw(directive: raw, args: args, to: &profile)
+
         case "verb":
             profile.verbosity = args.first.flatMap(Int.init)
 

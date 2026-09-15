@@ -282,7 +282,7 @@ SemiVPN has been validated byte-for-byte against:
 
 - **Per-App VPN Deployment**: macOS enforces MDM/configuration-profile requirements for production deployment of `NEAppRule`. Development builds use Apple's `NETestAppMapping` mechanism.
 - **Session Renegotiation**: Server soft-resets and `reneg-sec` triggers are handled via seamless session re-establishment rather than in-band rekeying. Session packet counters are proactively refreshed before counter overflow.
-- **IPv6 Tunneling**: The current tunnel configuration prioritizes IPv4 routes; IPv6 tunnel configuration is planned for a subsequent update.
+- **IPv6 Dual-Stack & Leak Protection**: SemiVPN supports dual-stack IPv6 tunneling when configured on the OpenVPN server (parsing `ifconfig-ipv6`, `route-ipv6`, `redirect-gateway ipv6`, and IPv6 DNS). When connected to an IPv4-only VPN on a dual-stack network, SemiVPN automatically activates IPv6 Leak Protection by capturing all IPv6 traffic in the scoped tunnel and synthesizing ICMPv6 Destination Unreachable responses, causing Happy Eyeballs (RFC 8305) to immediately route all traffic through the VPN's IPv4 tunnel without leaking to the local ISP.
 - **UDP / QUIC in Browser Routing**: The browser proxy handles TCP HTTP and HTTPS CONNECT traffic. UDP-based protocols (QUIC/HTTP3 and WebRTC) should be disabled in Chrome if strict privacy isolation is required.
 - **TAP Devices**: Routed IP (`dev tun`) mode is supported; bridged ethernet (`dev tap`) is unsupported.
 

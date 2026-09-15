@@ -71,6 +71,14 @@ public final class OpenVPNConnection: @unchecked Sendable {
     public private(set) var peerID: UInt32 = 0
     public private(set) var pushedOptions: PushedOptions?
 
+    /// Indicates whether the active connection session negotiated an IPv6 configuration.
+    public var hasVPNIPv6: Bool {
+        if let pushed = pushedOptions, pushed.ifconfigIPv6Local != nil {
+            return true
+        }
+        return profile.ifconfigIPv6Local != nil
+    }
+
     private var socketFD: Int32 = -1
     private var readSource: DispatchSourceRead?
     /// All connection state is confined to this serial queue; callers of
@@ -201,7 +209,18 @@ public final class OpenVPNConnection: @unchecked Sendable {
     /// starts from the connect-completion handler instead.
     private func openTransport(_ remote: OVPNProfile.Remote) -> Bool {
         let isTCP = profile.transport == .tcp
-        socketFD = Darwin.socket(AF_INET, isTCP ? SOCK_STREAM : SOCK_DGRAM, isTCP ? IPPROTO_TCP : IPPROTO_UDP)
+        guard let resolved = resolveRemote(remote.host, port: remote.port, stream: isTCP) else {
+            fail(.socketError("cannot resolve \(remote.host)"))
+            return false
+        }
+
+        let family: Int32
+        switch resolved {
+        case .ipv4: family = AF_INET
+        case .ipv6: family = AF_INET6
+        }
+
+        socketFD = Darwin.socket(family, isTCP ? SOCK_STREAM : SOCK_DGRAM, isTCP ? IPPROTO_TCP : IPPROTO_UDP)
         guard socketFD >= 0 else {
             fail(.socketError(String(cString: strerror(errno))))
             return false
@@ -222,22 +241,25 @@ public final class OpenVPNConnection: @unchecked Sendable {
             let ifindex = if_nametoindex(iface)
             if ifindex != 0 {
                 var index = ifindex
-                setsockopt(socketFD, IPPROTO_IP, IP_BOUND_IF, &index, socklen_t(MemoryLayout<UInt32>.size))
+                let proto = (family == AF_INET6) ? IPPROTO_IPV6 : IPPROTO_IP
+                let optname = (family == AF_INET6) ? IPV6_BOUND_IF : IP_BOUND_IF
+                setsockopt(socketFD, proto, optname, &index, socklen_t(MemoryLayout<UInt32>.size))
             }
         }
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(remote.port).bigEndian
-        if let host = resolveIPv4(remote.host, stream: isTCP) {
-            addr.sin_addr = host
-        } else {
-            fail(.socketError("cannot resolve \(remote.host)"))
-            return false
-        }
-        let rc = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+
+        let rc: Int32
+        switch resolved {
+        case .ipv4(var addr):
+            rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        case .ipv6(var addr):
+            rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                }
             }
         }
 
@@ -893,22 +915,40 @@ public final class OpenVPNConnection: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private func resolveIPv4(_ host: String, stream: Bool) -> in_addr? {
+    private enum ResolvedRemote {
+        case ipv4(sockaddr_in)
+        case ipv6(sockaddr_in6)
+    }
+
+    private func resolveRemote(_ host: String, port: Int, stream: Bool) -> ResolvedRemote? {
         var hints = addrinfo()
-        hints.ai_family = AF_INET
+        hints.ai_family = AF_UNSPEC
         hints.ai_socktype = stream ? SOCK_STREAM : SOCK_DGRAM
         var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
+        guard getaddrinfo(host, "\(port)", &hints, &result) == 0, let first = result else {
             return nil
         }
         defer { freeaddrinfo(result) }
         var cursor: UnsafeMutablePointer<addrinfo>? = first
+        var v4Candidate: sockaddr_in?
+        var v6Candidate: sockaddr_in6?
         while let current = cursor {
             if current.pointee.ai_family == AF_INET, let addr = current.pointee.ai_addr {
-                let sin = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-                return sin.sin_addr
+                if v4Candidate == nil {
+                    v4Candidate = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                }
+            } else if current.pointee.ai_family == AF_INET6, let addr = current.pointee.ai_addr {
+                if v6Candidate == nil {
+                    v6Candidate = addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+                }
             }
             cursor = current.pointee.ai_next
+        }
+        if let v4 = v4Candidate {
+            return .ipv4(v4)
+        }
+        if let v6 = v6Candidate {
+            return .ipv6(v6)
         }
         return nil
     }

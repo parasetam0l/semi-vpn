@@ -398,7 +398,7 @@ func testPeerInfoContent() throws {
     let info = PeerInfo.build()
     #expect(info.contains("IV_VER=2.7.6"))
     #expect(info.contains("IV_NCP=2"))
-    #expect(info.contains("IV_PROTO=8094"))
+    #expect(info.contains("IV_PROTO=3998"))
     #expect(info.contains("IV_MTU=1600"))
     #expect(info.contains("IV_CIPHERS=AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305"))
     #expect(!info.contains("CBC"))

@@ -271,19 +271,14 @@ public final class OpenVPNConnection: @unchecked Sendable {
     /// session immediately. `completion` runs on the connection queue once
     /// the transport is closed.
     public func disconnect(completion: (@Sendable () -> Void)? = nil) {
-        queue.async { [weak self] in
-            guard let self else {
-                completion?()
-                return
-            }
+        // Strong captures: the caller may drop its last reference right
+        // after calling this (e.g. NEPacketTunnelProvider.stopTunnel), and
+        // the exit notification must still go out.
+        queue.async { [self] in
             self.wantsConnection = false
             self.reconnectGeneration &+= 1
             let notified = self.state == .ready && self.sendExitNotification()
-            let finish = { [weak self] in
-                guard let self else {
-                    completion?()
-                    return
-                }
+            let finish = { [self] in
                 self.teardown()
                 self.state = .disconnected
                 completion?()

@@ -28,6 +28,10 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
     private var sentPacketCount: UInt64 = 0
     private var receivedPacketCount: UInt64 = 0
     private var pathMonitor: NWPathMonitor?
+    /// Interface and gateways of the last satisfied path, to notice a new
+    /// network on the same interface (another Wi-Fi network).
+    private var lastPathSignature: String?
+    private var pathWasUnsatisfied = false
     private var networkChangeWork: DispatchWorkItem?
     private var logFile: FileHandle?
     /// Serializes log writes from every queue.
@@ -155,19 +159,28 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
 
     // MARK: - Network changes
 
-    /// Rebinds the transport when the physical network changes while awake
-    /// (Wi-Fi to Ethernet, a new Wi-Fi network): the old socket stays bound
-    /// to an interface that no longer carries traffic.
+    /// Rebinds the transport when the physical network changes while awake:
+    /// another interface (Wi-Fi to Ethernet), another network on the same
+    /// interface (new gateway), or the network coming back after a drop.
+    /// The old socket keeps a stale route or source address otherwise.
     private func handlePathUpdate(_ path: Network.NWPath) {
         guard connection != nil else { return }
         guard path.status == .satisfied, let interface = Self.physicalInterfaceName(for: path) else {
             log("network path: \(path.status) (waiting for a usable interface)")
+            pathWasUnsatisfied = true
             return
         }
-        guard interface != physicalInterface else { return }
-        log("network path: physical interface \(physicalInterface ?? "nil") -> \(interface)")
+        let signature = interface + "|" + path.gateways.map { "\($0)" }.sorted().joined(separator: ",")
+        let previous = lastPathSignature
+        lastPathSignature = signature
+        let recovered = pathWasUnsatisfied
+        pathWasUnsatisfied = false
+        // The first path only records the baseline: the connection was just
+        // created for it.
+        guard let previous, previous != signature || recovered else { return }
+        log("network path changed: \(previous) -> \(signature)\(recovered ? " (network came back)" : "")")
         physicalInterface = interface
-        // Interface changes come in bursts; reconnect once things settle.
+        // Path updates come in bursts; reconnect once things settle.
         networkChangeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, let connection = self.connection else { return }
@@ -412,7 +425,10 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
         // the server: redirect-gateway (or no routes at all) means the
         // default route, explicit routes mean a split tunnel.
         let includedServerRoutes = pushed.routes.filter { !$0.excluded }
-        let capturesAllIPv4 = nativePerApp || pushed.redirectGateway || includedServerRoutes.isEmpty
+        let ipv6Routes = pushed.routesIPv6.isEmpty ? connection.profile.routesIPv6 : pushed.routesIPv6
+        let serverRoutesNothing = includedServerRoutes.isEmpty && ipv6Routes.isEmpty
+            && !pushed.redirectGateway && !pushed.redirectGatewayIPv6
+        let capturesAllIPv4 = nativePerApp || pushed.redirectGateway || serverRoutesNothing
         let gateway = pushed.ipv4Gateway
         let serverAddress = connection.currentRemote?.host
             ?? (protocolConfiguration as? NETunnelProviderProtocol)?.serverAddress
@@ -457,12 +473,14 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
         let localIPv6 = pushed.ifconfigIPv6Local ?? connection.profile.ifconfigIPv6Local
         let netbitsIPv6 = pushed.ifconfigIPv6Netbits ?? connection.profile.ifconfigIPv6Netbits ?? 64
         let remoteIPv6 = pushed.ifconfigIPv6Remote ?? connection.profile.ifconfigIPv6Remote ?? pushed.routeIPv6Gateway
-        let ipv6Routes = pushed.routesIPv6.isEmpty ? connection.profile.routesIPv6 : pushed.routesIPv6
 
         if hasVPNIPv6, let localIPv6 {
             log("configuring dual-stack IPv6 tunnel: local=\(localIPv6)/\(netbitsIPv6) remote=\(remoteIPv6 ?? "nil")")
             let ipv6 = NEIPv6Settings(addresses: [localIPv6], networkPrefixLengths: [NSNumber(value: netbitsIPv6)])
-            if capturesAllIPv4 || pushed.redirectGatewayIPv6 {
+            // The IPv6 default route: per-app scope, redirect-gateway ipv6,
+            // or an IPv4 full tunnel without explicit IPv6 routes (so IPv6
+            // cannot bypass it).
+            if nativePerApp || pushed.redirectGatewayIPv6 || (capturesAllIPv4 && ipv6Routes.isEmpty) {
                 let defaultRoute = NEIPv6Route.default()
                 defaultRoute.gatewayAddress = remoteIPv6
                 ipv6.includedRoutes = [defaultRoute]

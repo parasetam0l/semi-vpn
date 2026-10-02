@@ -386,6 +386,9 @@ final class LocalProxyServer {
         connectTimer?.setEventHandler { [weak self, weak upstream, weak client] in
             guard let self, let upstream, let client else { return }
             AppLogger.log("local proxy: upstream \(target.host):\(target.port) connection timed out after 12s")
+            // Detach first: the .cancelled callback would close the client
+            // before the 504 is written.
+            upstream.stateUpdateHandler = nil
             upstream.cancel()
             self.sendProxyResponse(status: "504 Gateway Timeout", body: "SemiVPN: connection to \(target.host):\(target.port) timed out.\n", on: client)
         }
@@ -442,6 +445,7 @@ final class LocalProxyServer {
                 AppLogger.log("local proxy: upstream \(target.host):\(target.port) waiting: \(error), path=\(String(describing: upstream.currentPath))")
                 if case .posix(let code) = error, code == .ECONNREFUSED || code == .EHOSTUNREACH || code == .ENETUNREACH {
                     cancelTimer()
+                    upstream.stateUpdateHandler = nil
                     upstream.cancel()
                     self.sendProxyResponse(status: "502 Bad Gateway", body: "SemiVPN: host unreachable (\(error)).\n", on: client)
                 }

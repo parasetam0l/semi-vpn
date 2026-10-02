@@ -52,6 +52,8 @@ final class VPNManager: ObservableObject {
     /// Whether the credentials used for the running tunnel may stay in the
     /// shared keychain item after disconnecting.
     private var keepCredentialsAfterStop = true
+    /// Set by `stop()`: a disconnect the user asked for is not an error.
+    private var userRequestedStop = false
 
     private let tunnelProviderBundleIdentifier = "com.semivpn.app.TunnelProvider"
     private let proxyHelperBundleIdentifier = "com.semivpn.proxy"
@@ -200,7 +202,10 @@ final class VPNManager: ObservableObject {
     func start(credentials: TunnelSecrets.Credentials? = nil, remember: Bool = false) async throws {
         SharedConfig.ensureDirectories()
         AppLogger.log("start: begin")
-        await MainActor.run { self.lastError = nil }
+        await MainActor.run {
+            self.lastError = nil
+            self.userRequestedStop = false
+        }
 
         guard let selection,
               let profileText = SharedConfig.loadProfile(name: selection.profileName) else {
@@ -271,6 +276,17 @@ final class VPNManager: ObservableObject {
             stale.connection.stopVPNTunnel()
             stale.isOnDemandEnabled = false
             stale.isEnabled = false
+            // Do not leave secrets of older builds (or the no-keychain
+            // fallback) in the unencrypted VPN preferences.
+            if let staleProtocol = stale.protocolConfiguration as? NETunnelProviderProtocol {
+                var configuration = staleProtocol.providerConfiguration ?? [:]
+                for key in [SharedConfig.profileKey, TunnelSecrets.usernameKey,
+                            TunnelSecrets.passwordKey, TunnelSecrets.keyPassphraseKey] {
+                    configuration.removeValue(forKey: key)
+                }
+                staleProtocol.providerConfiguration = configuration
+                stale.protocolConfiguration = staleProtocol
+            }
             do {
                 try await stale.saveToPreferences()
                 AppLogger.log("start: disabled stale \(stale.routingMethod == .sourceApplication ? "per-app" : "all-apps") tunnel config")
@@ -369,6 +385,7 @@ final class VPNManager: ObservableObject {
     func stop() {
         AppLogger.log("disconnect requested")
         guard let manager = tunnelManager else { return }
+        userRequestedStop = true
 
         Task {
             // An explicit Disconnect must win over per-app On Demand. If the
@@ -463,7 +480,9 @@ final class VPNManager: ObservableObject {
                 AppLogger.log("VPN status connected after \(previousStatus.rawValue) — refreshing proxy helper")
                 self.restartProxyHelper()
             }
-            if newStatus == .disconnected, previousStatus != .disconnected, previousStatus != .disconnecting {
+            // NetworkExtension reports .disconnecting before .disconnected for
+            // failures too; only a stop the user asked for is not an error.
+            if newStatus == .disconnected, previousStatus != .disconnected, !self.userRequestedStop {
                 self.reportLastDisconnectError(manager)
             }
         }

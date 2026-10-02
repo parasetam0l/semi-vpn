@@ -2442,11 +2442,14 @@ struct ContentView: View {
         AppLogger.log("importing profile: \(url.lastPathComponent)")
         let text: String
         let parsed: OVPNProfile
+        var embeddedFiles: [String] = []
         do {
             // Embed referenced files (ca ca.crt, tls-auth ta.key 1, ...) so
             // the stored profile is self-contained.
             let original = try String(contentsOf: url, encoding: .utf8)
-            text = try OVPNProfileInliner.inline(original, baseDirectory: url.deletingLastPathComponent())
+            let inlined = try OVPNProfileInliner.inlineReportingFiles(original, baseDirectory: url.deletingLastPathComponent())
+            text = inlined.text
+            embeddedFiles = inlined.files
             parsed = try OVPNParser().parse(text)
         } catch {
             importError = "Invalid profile: \(error.localizedDescription)"
@@ -2462,7 +2465,8 @@ struct ContentView: View {
         let warnings = parsed.issues.filter { $0.severity == .warning }.map(\.message)
 
         var name = importName(for: url, text: text)
-        if askName {
+        // Profiles that pulled in other files always ask, even from a scan.
+        if askName || !embeddedFiles.isEmpty {
             // Confirmation with the profile's identity — the name comes
             // from the certificate CN automatically.
             let host = parsed.remotes.first?.host ?? "unknown"
@@ -2470,7 +2474,9 @@ struct ContentView: View {
 
             let alert = NSAlert()
             alert.messageText = "Add this profile?"
-            alert.informativeText = ([url.lastPathComponent] + warnings.map { "⚠︎ \($0)" }).joined(separator: "\n")
+            let embeddedNote = embeddedFiles.isEmpty ? [] : ["Embeds: " + embeddedFiles.joined(separator: ", ")]
+            alert.informativeText = ([url.lastPathComponent] + embeddedNote + warnings.map { "⚠︎ \($0)" })
+                .joined(separator: "\n")
 
             let stack = NSStackView()
             stack.orientation = .vertical

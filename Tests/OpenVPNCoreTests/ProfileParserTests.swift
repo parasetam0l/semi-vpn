@@ -153,6 +153,14 @@ func testInliner() throws {
     #expect(throws: OVPNInlineError.missingFile(directive: "cert", path: "client.crt")) {
         try OVPNProfileInliner.inline("cert client.crt", baseDirectory: directory)
     }
+    // Files outside the profile's folder are never read.
+    for path in ["/etc/hosts", "~/.netrc", "../outside.txt", "sub/../../outside.txt"] {
+        #expect(throws: OVPNInlineError.fileOutsideProfileFolder(directive: "auth-user-pass", path: path)) {
+            try OVPNProfileInliner.inline("auth-user-pass \(path)", baseDirectory: directory)
+        }
+    }
+    let report = try OVPNProfileInliner.inlineReportingFiles(text, baseDirectory: directory)
+    #expect(report.files == ["ca.crt", "my ta.key", "creds.txt"])
     // Self-contained profiles pass through untouched.
     #expect(try OVPNProfileInliner.inline("remote a\n<ca>\nX\n</ca>", baseDirectory: directory) == "remote a\n<ca>\nX\n</ca>")
 }

@@ -337,13 +337,17 @@ function renderCurrentSite(configuration, domains, subdomainDomains, activeDomai
   if (!currentDomainEnabled) {
     elements.currentStateDetail.textContent = "Paused for this domain. Traffic stays direct.";
   } else if (configuration.lastSyncSucceeded === false) {
-    elements.currentStateDetail.textContent = "SemiVPN is unavailable. Traffic stays direct until it reconnects.";
+    elements.currentStateDetail.textContent = configuration.blockWhenDisconnected === true
+      ? "SemiVPN is unavailable. This site is blocked until it is back."
+      : "SemiVPN is unavailable. Traffic stays direct until it reconnects.";
   } else if (mode === "all-apps") {
     elements.currentStateDetail.textContent = "All apps mode covers this site through the VPN; the browser proxy is not needed.";
   } else if (mode === "selected-apps-only") {
     elements.currentStateDetail.textContent = "Browser routing is not included in this mode. Traffic stays direct.";
   } else if (configuration.forwardingAllowed !== true) {
-    elements.currentStateDetail.textContent = "Domain routing is enabled, but the VPN is not connected.";
+    elements.currentStateDetail.textContent = configuration.blockWhenDisconnected === true
+      ? "The VPN is not connected. This site is blocked until it connects."
+      : "The VPN is not connected. Traffic stays direct until it connects.";
   } else {
     elements.currentStateDetail.textContent = "This site is routed through SemiVPN.";
   }

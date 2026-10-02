@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var domains: [String] = []
     @State private var subdomainDomains: Set<String> = []
     @State private var inactiveDomains: Set<String> = []
+    @State private var blockWhenDisconnected = false
     @State private var domainInput = ""
     @State private var domainInputError: String?
     @State private var pendingDomainToAdd: String?
@@ -819,6 +820,24 @@ struct ContentView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
             }
+            Toggle(isOn: Binding(
+                get: { blockWhenDisconnected },
+                set: { enabled in
+                    blockWhenDisconnected = SharedConfig.setBlockWhenDisconnected(enabled).blockWhenDisconnected
+                    AppLogger.log("browser fail-closed \(enabled ? "enabled" : "disabled")")
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Block listed domains while the VPN is disconnected")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(blockWhenDisconnected
+                         ? "Listed sites never use your regular connection; they fail until the VPN is connected."
+                         : "Listed sites use your regular connection while the VPN is disconnected.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(SemiTheme.textMuted)
+                }
+            }
+            .toggleStyle(.switch)
             if domains.isEmpty {
                 emptyPanel(icon: "globe.badge.chevron.backward", title: "No domains added", detail: "Add a domain here or from the SemiVPN Chrome extension. Choose Selected apps + browser or Browser only in the Routing tab to use it.")
             } else {
@@ -2166,6 +2185,7 @@ struct ContentView: View {
         domains = configuration.domains
         subdomainDomains = Set(configuration.subdomainDomains)
         inactiveDomains = Set(configuration.inactiveDomains)
+        blockWhenDisconnected = configuration.blockWhenDisconnected
         domainInputError = nil
     }
 

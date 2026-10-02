@@ -20,6 +20,15 @@ final class LocalProxyServer {
     private var restartWorkItem: DispatchWorkItem?
 
     private static let headerSeparator = Data([13, 10, 13, 10])
+    /// The SemiVPN Chrome extension's ID, pinned by the `key` in its
+    /// manifest; only it may change the routing policy.
+    static let extensionOrigin = "chrome-extension://jaiknknmjmncnocbcbneepnefhokegma"
+
+    /// Parsed config files, re-read only when they change on disk (they
+    /// used to be read several times per proxied connection).
+    private let cacheLock = NSLock()
+    private var domainCache: (modified: Date?, value: SharedConfig.DomainConfiguration)?
+    private var runtimeCache: (modified: Date?, value: SharedConfig.RuntimeState)?
 
     func start() {
         queue.async { [weak self] in
@@ -186,7 +195,7 @@ final class LocalProxyServer {
         let inMemory = forwardingAllowed
         stateLock.unlock()
         if inMemory { return true }
-        return SharedConfig.loadRuntimeState().forwardingAllowed
+        return runtimeState().forwardingAllowed
     }
 
     private func currentVPNStatus() -> String {
@@ -196,8 +205,37 @@ final class LocalProxyServer {
         if inMemory != "disconnected" && inMemory != "invalid" {
             return inMemory
         }
-        let runtime = SharedConfig.loadRuntimeState().vpnStatus
+        let runtime = runtimeState().vpnStatus
         return runtime.isEmpty ? inMemory : runtime
+    }
+
+    private static func modificationDate(_ url: URL?) -> Date? {
+        guard let url else { return nil }
+        return (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    private func domainConfiguration() -> SharedConfig.DomainConfiguration {
+        let modified = Self.modificationDate(SharedConfig.domainsURL)
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cache = domainCache, cache.modified == modified, modified != nil {
+            return cache.value
+        }
+        let value = SharedConfig.loadDomainConfiguration()
+        domainCache = (modified, value)
+        return value
+    }
+
+    private func runtimeState() -> SharedConfig.RuntimeState {
+        let modified = Self.modificationDate(SharedConfig.runtimeStateURL)
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cache = runtimeCache, cache.modified == modified, modified != nil {
+            return cache.value
+        }
+        let value = SharedConfig.loadRuntimeState()
+        runtimeCache = (modified, value)
+        return value
     }
 
     private func notifyDomainConfigurationChanged() {
@@ -287,7 +325,7 @@ final class LocalProxyServer {
             return
         }
 
-        let domainConfig = SharedConfig.loadDomainConfiguration()
+        let domainConfig = domainConfiguration()
         let isConfigured = SharedConfig.domainMatches(
             host: target.host,
             domains: domainConfig.domains,
@@ -304,11 +342,20 @@ final class LocalProxyServer {
             subdomainDomains: domainConfig.activeSubdomainDomains
         )
         let shouldTunnel = isDomainActive && canForward()
+        if isDomainActive, !shouldTunnel, domainConfig.blockWhenDisconnected {
+            // Fail closed: the user asked for listed domains to never leave
+            // through the regular network.
+            AppLogger.log("local proxy: blocked \(target.host):\(target.port) (VPN not connected)")
+            sendProxyResponse(status: "503 Service Unavailable",
+                              body: "SemiVPN: \(target.host) is only reachable through the VPN, which is not connected.\n",
+                              on: client)
+            return
+        }
 
         let upstreamParams = NWParameters.tcp
         upstreamParams.preferNoProxies = true
         if shouldTunnel {
-            let hasVPNIPv6 = SharedConfig.loadRuntimeState().hasVPNIPv6
+            let hasVPNIPv6 = runtimeState().hasVPNIPv6
             if !hasVPNIPv6 {
                 if let ipOptions = upstreamParams.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
                     ipOptions.version = .v4
@@ -322,9 +369,9 @@ final class LocalProxyServer {
                 AppLogger.log("local proxy: warning: no active tunnel interface found for \(target.host):\(target.port)")
             }
         } else {
-            // Fail-open direct routing: when the VPN is disconnected or domain is paused,
-            // connect directly over the physical network (dual stack) rather than breaking
-            // the user's browser with 503 Service Unavailable / ERR_TUNNEL_CONNECTION_FAILED.
+            // Direct routing for paused domains, and (unless the user chose
+            // to block) while the VPN is disconnected, rather than breaking
+            // the browser with ERR_TUNNEL_CONNECTION_FAILED.
             let reason = !canForward() ? "VPN disconnected" : "domain paused"
             AppLogger.log("local proxy: direct bypass for \(target.host):\(target.port) (\(reason))")
         }
@@ -405,6 +452,8 @@ final class LocalProxyServer {
             case .failed(let error):
                 cancelTimer()
                 AppLogger.log("local proxy: upstream \(target.host):\(target.port) failed: \(error), path=\(String(describing: upstream.currentPath))")
+                upstream.stateUpdateHandler = nil
+                upstream.cancel()
                 self.sendProxyResponse(status: "502 Bad Gateway", body: "SemiVPN could not reach the target: \(error.localizedDescription)\n", on: client)
             case .cancelled:
                 cancelTimer()
@@ -418,6 +467,14 @@ final class LocalProxyServer {
     }
 
     private func parseAuthority(_ value: String, defaultPort: UInt16) -> ProxyTarget? {
+        // [v6]:port, host:port or host
+        if value.hasPrefix("["), let close = value.firstIndex(of: "]") {
+            let host = String(value[value.index(after: value.startIndex)..<close])
+            let rest = value[value.index(after: close)...]
+            let port = rest.hasPrefix(":") ? UInt16(rest.dropFirst()) : defaultPort
+            guard !host.isEmpty, let port, port > 0 else { return nil }
+            return ProxyTarget(host: host, port: port)
+        }
         let pieces = value.split(separator: ":", maxSplits: 1).map(String.init)
         guard let host = pieces.first, !host.isEmpty else { return nil }
         let port = pieces.count == 2 ? UInt16(pieces[1]) : defaultPort
@@ -434,23 +491,30 @@ final class LocalProxyServer {
         return ProxyTarget(host: host, port: port)
     }
 
+    /// Rewrites an absolute-form proxy request for the origin server.
+    ///
+    /// Each proxied HTTP request gets its own upstream connection
+    /// (`Connection: close`): Chrome reuses proxy connections across hosts,
+    /// and piping a kept-alive connection would send later requests, for
+    /// other hosts, to the first host without the domain check.
     private func rewrittenHTTPRequest(_ request: HTTPRequest, target: ProxyTarget) -> Data {
         guard let url = URL(string: request.target) else { return request.raw }
         var path = url.path.isEmpty ? "/" : url.path
         if let query = url.query, !query.isEmpty { path += "?\(query)" }
 
+        let hopByHop: Set<String> = ["connection", "proxy-connection", "keep-alive", "proxy-authorization", "te", "upgrade"]
         var lines = ["\(request.method) \(path) HTTP/\(request.httpVersion)"]
-        for (name, value) in request.headers where name != "proxy-connection" {
+        for (name, value) in request.headerLines where !hopByHop.contains(name.lowercased()) {
             lines.append("\(name): \(value)")
         }
-        if !request.headers.keys.contains("host") {
+        if request.headers["host"] == nil {
             lines.append("Host: \(target.host)")
         }
+        lines.append("Connection: close")
         lines.append("")
         lines.append("")
         var data = Data(lines.joined(separator: "\r\n").utf8)
         data.append(request.body)
-        data.append(request.trailing)
         return data
     }
 
@@ -471,10 +535,22 @@ final class LocalProxyServer {
         let components = URLComponents(string: "http://localhost\(request.target)")
         let path = components?.path ?? request.target
 
-        // A normal webpage must not be able to mutate the routing policy via
-        // a browser CORS request. The unpacked Chrome extension has a
-        // chrome-extension:// origin; native callers such as curl omit it.
-        if let origin = request.headers["origin"], !origin.hasPrefix("chrome-extension://") {
+        // DNS rebinding: a web page that points its own hostname at
+        // 127.0.0.1 is same-origin to itself, so only loopback Host headers
+        // are accepted.
+        let allowedHosts: Set<String> = [
+            "127.0.0.1:\(SharedConfig.localControlPort)",
+            "[::1]:\(SharedConfig.localControlPort)",
+            "localhost:\(SharedConfig.localControlPort)",
+        ]
+        guard let host = request.headers["host"]?.lowercased(), allowedHosts.contains(host) else {
+            sendControlResponse(status: "421 Misdirected Request", body: Data("Unexpected Host header.\n".utf8), on: connection)
+            return
+        }
+        // A normal webpage (or another extension) must not be able to read
+        // or mutate the routing policy via a browser request. Native
+        // callers such as curl send no Origin.
+        if let origin = request.headers["origin"], origin != Self.extensionOrigin {
             sendControlResponse(status: "403 Forbidden", body: Data("Only the SemiVPN Chrome extension may call this API.\n".utf8), on: connection)
             return
         }
@@ -486,7 +562,7 @@ final class LocalProxyServer {
 
         switch (request.method, path) {
         case ("GET", "/v1/status"):
-            let domainConfiguration = SharedConfig.loadDomainConfiguration()
+            let domainConfiguration = domainConfiguration()
             let selection = SharedConfig.loadSelection()
             let status = LocalAPIStatus(
                 proxyHost: "127.0.0.1",
@@ -503,12 +579,13 @@ final class LocalProxyServer {
                 inactiveDomains: domainConfiguration.inactiveDomains,
                 subdomainDomains: domainConfiguration.subdomainDomains,
                 activeSubdomainDomains: domainConfiguration.activeSubdomainDomains,
+                blockWhenDisconnected: domainConfiguration.blockWhenDisconnected,
                 revision: domainConfiguration.revision,
                 updatedAt: domainConfiguration.updatedAt
             )
             sendJSON(status, status: "200 OK", on: connection)
         case ("GET", "/v1/domains"):
-            sendJSON(SharedConfig.loadDomainConfiguration(), status: "200 OK", on: connection)
+            sendJSON(domainConfiguration(), status: "200 OK", on: connection)
         case ("POST", "/v1/domains"):
             guard let mutation = try? JSONDecoder().decode(DomainMutation.self, from: request.body) else {
                 sendControlResponse(status: "400 Bad Request", body: Data("Expected JSON: {\"domain\":\"example.com\",\"includeSubdomains\":true}".utf8), on: connection)
@@ -619,7 +696,7 @@ final class LocalProxyServer {
 
     private func sendControlResponse(status: String, body: Data, contentType: String = "text/plain; charset=utf-8", on connection: NWConnection) {
         var response = Data("HTTP/1.1 \(status)\r\n".utf8)
-        response.append(Data("Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8))
+        response.append(Data("Access-Control-Allow-Origin: \(Self.extensionOrigin)\r\nAccess-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8))
         response.append(body)
         sendData(response, on: connection) { _ in
             connection.cancel()
@@ -671,6 +748,7 @@ final class LocalProxyServer {
         let inactiveDomains: [String]
         let subdomainDomains: [String]
         let activeSubdomainDomains: [String]
+        let blockWhenDisconnected: Bool
         let revision: Int
         let updatedAt: Date
     }
@@ -679,7 +757,10 @@ final class LocalProxyServer {
         let method: String
         let target: String
         let httpVersion: String
+        /// Lower-cased name -> value (last one wins), for lookups.
         let headers: [String: String]
+        /// Every header line in order, with its original name.
+        let headerLines: [(String, String)]
         let raw: Data
         var body = Data()
         var trailing = Data()
@@ -695,16 +776,20 @@ final class LocalProxyServer {
             guard parts.count == 3 else { return nil }
             let version = parts[2].hasPrefix("HTTP/") ? String(parts[2].dropFirst(5)) : "1.1"
             var parsedHeaders: [String: String] = [:]
+            var orderedHeaders: [(String, String)] = []
             for line in lines.dropFirst() {
                 guard let colon = line.firstIndex(of: ":") else { continue }
-                let name = line[..<colon].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let name = line[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
                 let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
-                if !name.isEmpty { parsedHeaders[name] = value }
+                guard !name.isEmpty else { continue }
+                parsedHeaders[name.lowercased()] = value
+                orderedHeaders.append((name, value))
             }
             method = parts[0].uppercased()
             target = parts[1]
             httpVersion = version
             headers = parsedHeaders
+            headerLines = orderedHeaders
             raw = Data(header.utf8)
         }
     }

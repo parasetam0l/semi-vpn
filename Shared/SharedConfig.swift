@@ -11,8 +11,14 @@ public enum SharedConfig {
     public static let profilesDirectory = "profiles"
     public static let selectionFile = "selection.json"
     public static let domainsFile = "domains.json"
-    public static let localProxyPort: UInt16 = 49280
-    public static let localControlPort: UInt16 = 49281
+    /// Loopback ports of SemiProxy. `SEMIVPN_PROXY_PORT` /
+    /// `SEMIVPN_CONTROL_PORT` override them for tests.
+    public static let localProxyPort: UInt16 = environmentPort("SEMIVPN_PROXY_PORT") ?? 49280
+    public static let localControlPort: UInt16 = environmentPort("SEMIVPN_CONTROL_PORT") ?? 49281
+
+    private static func environmentPort(_ name: String) -> UInt16? {
+        ProcessInfo.processInfo.environment[name].flatMap(UInt16.init)
+    }
     public static let domainConfigurationDidChangeNotification = Notification.Name(
         "com.semivpn.app.domainConfigurationDidChange"
     )
@@ -35,7 +41,11 @@ public enum SharedConfig {
     /// the (sandboxed) extensions resolve it inside their own containers.
     /// Never the app group.
     public static var containerURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        // Tests run a separate SemiProxy against a scratch directory.
+        if let override = ProcessInfo.processInfo.environment["SEMIVPN_CONTAINER"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("semi-vpn", isDirectory: true)
     }
 
@@ -273,13 +283,19 @@ public enum SharedConfig {
         /// A missing field is treated as an empty set for compatibility with
         /// configurations written by earlier builds.
         public var inactiveDomains: [String]
+        /// Fail closed: while the VPN is disconnected, listed (active)
+        /// domains are blocked instead of connecting directly. Off by
+        /// default, which keeps sites usable when the VPN drops.
+        public var blockWhenDisconnected: Bool
         public var revision: Int
         public var updatedAt: Date
 
-        public init(domains: [String] = [], inactiveDomains: [String] = [], subdomainDomains: [String]? = nil, revision: Int = 0, updatedAt: Date = .distantPast) {
+        public init(domains: [String] = [], inactiveDomains: [String] = [], subdomainDomains: [String]? = nil,
+                    blockWhenDisconnected: Bool = false, revision: Int = 0, updatedAt: Date = .distantPast) {
             self.domains = domains
             self.subdomainDomains = (subdomainDomains ?? domains).filter { domains.contains($0) }
             self.inactiveDomains = inactiveDomains.filter { domains.contains($0) }
+            self.blockWhenDisconnected = blockWhenDisconnected
             self.revision = revision
             self.updatedAt = updatedAt
         }
@@ -288,6 +304,7 @@ public enum SharedConfig {
             case domains
             case subdomainDomains
             case inactiveDomains
+            case blockWhenDisconnected
             case revision
             case updatedAt
         }
@@ -300,6 +317,7 @@ public enum SharedConfig {
             self.subdomainDomains = subdomainDomains.filter { domains.contains($0) }
             let inactiveDomains = try container.decodeIfPresent([String].self, forKey: .inactiveDomains) ?? []
             self.inactiveDomains = inactiveDomains.filter { domains.contains($0) }
+            self.blockWhenDisconnected = try container.decodeIfPresent(Bool.self, forKey: .blockWhenDisconnected) ?? false
             self.revision = try container.decodeIfPresent(Int.self, forKey: .revision) ?? 0
             self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
         }
@@ -328,10 +346,33 @@ public enum SharedConfig {
     }
 
     private static let domainsLock = NSLock()
+    private static var domainsLockFD: Int32 = -1
+
+    /// Serializes domain-list read-modify-write cycles within this process
+    /// and across processes (the app and SemiProxy both edit the list).
+    private static func lockDomains() {
+        domainsLock.lock()
+        ensureDirectories()
+        if let url = containerURL?.appendingPathComponent("domains.lock") {
+            domainsLockFD = open(url.path, O_CREAT | O_RDWR, 0o600)
+            if domainsLockFD >= 0 {
+                flock(domainsLockFD, LOCK_EX)
+            }
+        }
+    }
+
+    private static func unlockDomains() {
+        if domainsLockFD >= 0 {
+            flock(domainsLockFD, LOCK_UN)
+            close(domainsLockFD)
+            domainsLockFD = -1
+        }
+        domainsLock.unlock()
+    }
 
     public static func loadDomainConfiguration() -> DomainConfiguration {
-        domainsLock.lock()
-        defer { domainsLock.unlock() }
+        lockDomains()
+        defer { unlockDomains() }
         return readDomainConfiguration()
     }
 
@@ -354,8 +395,8 @@ public enum SharedConfig {
     @discardableResult
     public static func addDomain(_ rawValue: String, includeSubdomains: Bool = true) throws -> DomainConfiguration {
         guard let domain = routingDomain(rawValue) else { throw DomainError.invalidDomain }
-        domainsLock.lock()
-        defer { domainsLock.unlock() }
+        lockDomains()
+        defer { unlockDomains() }
 
         var configuration = readDomainConfiguration()
         let hasDomain = configuration.domains.contains(domain)
@@ -380,8 +421,8 @@ public enum SharedConfig {
     @discardableResult
     public static func removeDomain(_ rawValue: String) throws -> DomainConfiguration {
         guard let normalized = normalizeDomain(rawValue) else { throw DomainError.invalidDomain }
-        domainsLock.lock()
-        defer { domainsLock.unlock() }
+        lockDomains()
+        defer { unlockDomains() }
 
         var configuration = readDomainConfiguration()
         let domain = configuration.domains.contains(normalized)
@@ -402,8 +443,8 @@ public enum SharedConfig {
     @discardableResult
     public static func setDomainEnabled(_ rawValue: String, enabled: Bool) throws -> DomainConfiguration {
         guard let normalized = normalizeDomain(rawValue) else { throw DomainError.invalidDomain }
-        domainsLock.lock()
-        defer { domainsLock.unlock() }
+        lockDomains()
+        defer { unlockDomains() }
 
         var configuration = readDomainConfiguration()
         let domain = configuration.domains.contains(normalized)
@@ -420,6 +461,19 @@ public enum SharedConfig {
             configuration.inactiveDomains.append(domain)
             configuration.inactiveDomains.sort()
         }
+        configuration.revision += 1
+        configuration.updatedAt = Date()
+        writeDomainConfiguration(configuration)
+        return configuration
+    }
+
+    @discardableResult
+    public static func setBlockWhenDisconnected(_ enabled: Bool) -> DomainConfiguration {
+        lockDomains()
+        defer { unlockDomains() }
+        var configuration = readDomainConfiguration()
+        guard configuration.blockWhenDisconnected != enabled else { return configuration }
+        configuration.blockWhenDisconnected = enabled
         configuration.revision += 1
         configuration.updatedAt = Date()
         writeDomainConfiguration(configuration)

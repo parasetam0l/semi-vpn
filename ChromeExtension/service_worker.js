@@ -69,9 +69,15 @@ function normalizeDomainConfiguration(configuration = {}) {
   };
 }
 
-function pacForDomains(domains, subdomainDomains = domains) {
+// Listed domains always go to the local proxy, which decides per
+// connection: through the VPN when it is connected; otherwise directly, or
+// blocked when the user chose to fail closed. With fail-closed there is no
+// DIRECT fallback either, so a stopped proxy cannot leak listed domains.
+function pacForDomains(domains, subdomainDomains = domains, blockWhenDisconnected = false) {
   const serializedDomains = JSON.stringify(domains);
   const serializedSubdomainDomains = JSON.stringify(subdomainDomains);
+  const route = "PROXY [::1]:" + PROXY_PORT + "; PROXY " + PROXY_HOST + ":" + PROXY_PORT +
+    (blockWhenDisconnected ? "" : "; DIRECT");
   return "function FindProxyForURL(url, host) {" +
     " host = (host || '').toLowerCase().replace(/\\.$/, '');" +
     " var domains = " + serializedDomains + ";" +
@@ -79,7 +85,7 @@ function pacForDomains(domains, subdomainDomains = domains) {
     " for (var i = 0; i < domains.length; i++) {" +
     "   if (host === domains[i] || host === 'www.' + domains[i] ||" +
     "       (subdomainDomains.indexOf(domains[i]) !== -1 && dnsDomainIs(host, '.' + domains[i]))) {" +
-    "     return 'PROXY [::1]:" + PROXY_PORT + "; PROXY " + PROXY_HOST + ":" + PROXY_PORT + "; DIRECT';" +
+    "     return '" + route + "';" +
     "   }" +
     " }" +
     " return 'DIRECT';" +
@@ -92,12 +98,14 @@ async function applyConfiguration(configuration) {
   const mode = routingMode(configuration);
   const forwardingAllowed = configuration.forwardingAllowed === true;
   const browserRoutingEnabled = browserModeEnabled(configuration);
-  const proxyAvailable = browserRoutingEnabled && forwardingAllowed;
-  const proxyDomains = proxyAvailable ? activeDomains : [];
-  const proxySubdomainDomains = proxyAvailable ? activeSubdomainDomains : [];
+  const blockWhenDisconnected = configuration.blockWhenDisconnected === true;
+  // The proxy, not the PAC, follows the VPN state: listing the domains only
+  // while connected left them DIRECT until the next sync after connecting.
+  const proxyDomains = browserRoutingEnabled ? activeDomains : [];
+  const proxySubdomainDomains = browserRoutingEnabled ? activeSubdomainDomains : [];
   await setProxy({
     mode: "pac_script",
-    pacScript: { data: pacForDomains(proxyDomains, proxySubdomainDomains), mandatory: true }
+    pacScript: { data: pacForDomains(proxyDomains, proxySubdomainDomains, blockWhenDisconnected), mandatory: true }
   });
   await storeConfiguration({
     domains,
@@ -108,6 +116,7 @@ async function applyConfiguration(configuration) {
     routingMode: mode,
     browserRoutingEnabled,
     forwardingAllowed,
+    blockWhenDisconnected,
     revision: configuration.revision || 0,
     updatedAt: configuration.updatedAt || null,
     lastSyncSucceeded: true
@@ -159,12 +168,14 @@ async function syncFromAppNow() {
     const cached = normalizeDomainConfiguration(await getStoredConfiguration());
     const cachedForwardingAllowed = cached.forwardingAllowed === true;
     const cachedBrowserRoutingEnabled = cached.browserRoutingEnabled === true || browserModeEnabled(cached);
-    const cachedProxyAvailable = cachedBrowserRoutingEnabled && cachedForwardingAllowed;
-    const cachedDomains = cachedProxyAvailable ? cached.activeDomains : [];
-    const cachedProxySubdomainDomains = cachedProxyAvailable ? cached.activeSubdomainDomains : [];
+    const cachedDomains = cachedBrowserRoutingEnabled ? cached.activeDomains : [];
+    const cachedProxySubdomainDomains = cachedBrowserRoutingEnabled ? cached.activeSubdomainDomains : [];
     await setProxy({
       mode: "pac_script",
-      pacScript: { data: pacForDomains(cachedDomains, cachedProxySubdomainDomains), mandatory: true }
+      pacScript: {
+        data: pacForDomains(cachedDomains, cachedProxySubdomainDomains, cached.blockWhenDisconnected === true),
+        mandatory: true
+      }
     });
     await storeConfiguration({
       ...cached,
@@ -351,6 +362,14 @@ async function updateBadgeForTab(tabId, url) {
         await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
       }
       await chrome.action.setTitle({ title: `SemiVPN: Active (${hostname} -> VPN)`, tabId });
+    } else if (isBrowserMode && config.blockWhenDisconnected === true) {
+      // Fail-closed: the site is blocked until the VPN connects
+      await chrome.action.setBadgeText({ text: "BLK", tabId });
+      await chrome.action.setBadgeBackgroundColor({ color: "#dc2626", tabId }); // Red
+      if (chrome.action.setBadgeTextColor) {
+        await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
+      }
+      await chrome.action.setTitle({ title: `SemiVPN: Blocked until the VPN connects (${hostname})`, tabId });
     } else {
       // In domain list, but VPN is disconnected
       await chrome.action.setBadgeText({ text: "DISC", tabId });

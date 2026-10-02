@@ -330,6 +330,14 @@ public final class OpenVPNConnection: @unchecked Sendable {
             // (SHA1 by default); the key slots follow key-direction.
             let keys = staticKey.tlsAuthKeys(direction: profile.keyDirection)
             tlsAuth = TLSAuth(digest: profile.effectiveDigest, sendKey: keys.send, verifyKey: keys.verify)
+        } else if let pem = profile.tlsCryptPEM {
+            guard let staticKey = try? OpenVPNStaticKey.parse(pem: pem) else {
+                fail(.invalidProfile("the <tls-crypt> key is not a valid OpenVPN static key"))
+                return
+            }
+            // tls-crypt (v1): the client encrypts with keys[1] and decrypts
+            // with keys[0] (KEY_DIRECTION_INVERSE), like tls-crypt-v2.
+            tlsCrypt = TlsCrypt(clientKey: .v1(staticKey: staticKey))
         } else if let tlsCryptV2 = profile.tlsCryptV2PEM {
             guard let decoded = PEMKeyExtractor.extractKey(from: tlsCryptV2),
                   let clientKey = TlsCrypt.ClientKey.parse(decoded: decoded) else {

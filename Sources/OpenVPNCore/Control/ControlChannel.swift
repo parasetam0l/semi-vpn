@@ -82,6 +82,10 @@ public final class ControlChannel: @unchecked Sendable {
 
     var usesTlsCrypt: Bool { tlsCrypt != nil }
 
+    /// tls-crypt-v2 announces itself with P_CONTROL_HARD_RESET_CLIENT_V3 and
+    /// carries the wrapped client key; tls-crypt v1 does neither.
+    var usesTlsCryptV2: Bool { tlsCrypt?.isV2 == true }
+
     var usesTlsAuth: Bool { tlsAuth != nil }
 
     // MARK: - Sending
@@ -92,7 +96,7 @@ public final class ControlChannel: @unchecked Sendable {
     /// (ack-count 0). With tls-crypt-v2 the reset is opcode V3 and has the
     /// wrapped client key appended.
     public func sendHardReset() {
-        let opcode: OpenVPNOpcode = usesTlsCrypt ? .controlHardResetClientV3 : .controlHardResetClientV2
+        let opcode: OpenVPNOpcode = usesTlsCryptV2 ? .controlHardResetClientV3 : .controlHardResetClientV2
         let entry = SendEntry(
             packetID: 0,
             opcode: opcode,
@@ -123,7 +127,7 @@ public final class ControlChannel: @unchecked Sendable {
         // overhead is opcode+sid (9) + pid (8) + tag (32) + acks (~17),
         // plus the appended WKC on the first data packet.
         var maxFragment = 1400 - 9 - 8 - 32 - 17
-        if peerRequestsWKCResend, !sentWKCOnce, usesTlsCrypt {
+        if peerRequestsWKCResend, !sentWKCOnce, usesTlsCryptV2 {
             maxFragment -= 299   // WKC
         }
         maxFragment = max(256, min(maxFragment, Self.maxFragmentLength))
@@ -171,7 +175,7 @@ public final class ControlChannel: @unchecked Sendable {
         if opcode == .controlV1,
            peerRequestsWKCResend,
            !sentWKCOnce,
-           tlsCrypt != nil {
+           usesTlsCryptV2 {
             opcode = .controlWKCv1
         }
 
@@ -195,7 +199,7 @@ public final class ControlChannel: @unchecked Sendable {
             if let wrapped = try? tlsCrypt.wrap(header: header, body: body) {
                 packet.append(wrapped)
             }
-            if opcode == .controlHardResetClientV3 || opcode == .controlWKCv1 {
+            if tlsCrypt.isV2, opcode == .controlHardResetClientV3 || opcode == .controlWKCv1 {
                 packet.append(tlsCrypt.clientKey.wkc)
                 if opcode == .controlWKCv1 {
                     sentWKCOnce = true

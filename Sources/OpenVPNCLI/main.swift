@@ -121,7 +121,7 @@ if let authUser = options.authUser {
 
 print("profile: \(profile.remotes.map { "\($0.host):\($0.port)" }.joined(separator: ", "))")
 print("transport: \(profile.transport.rawValue), cipher: \(profile.cipher.rawValue), digest: \(profile.digest?.rawValue ?? "default")")
-print("tls-auth: \(profile.tlsAuthPEM != nil ? "yes" : "no"), tls-crypt-v2: \(profile.tlsCryptV2PEM != nil ? "yes" : "no"), cert-auth: \(profile.certPEM != nil ? "yes" : "no")")
+print("tls-auth: \(profile.tlsAuthPEM != nil ? "yes" : "no"), tls-crypt: \(profile.tlsCryptPEM != nil ? "yes" : "no"), tls-crypt-v2: \(profile.tlsCryptV2PEM != nil ? "yes" : "no"), cert-auth: \(profile.certPEM != nil ? "yes" : "no")")
 
 final class CLIHandler: OpenVPNConnection.Delegate {
     func connection(_ connection: OpenVPNConnection, stateChanged state: OpenVPNConnection.State) {

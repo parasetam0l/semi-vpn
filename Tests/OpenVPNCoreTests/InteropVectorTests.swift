@@ -92,3 +92,14 @@ func testDefaultDigest() throws {
     #expect(profile.digest == nil)
     #expect(profile.effectiveDigest == .sha1)
 }
+
+@Test("tls-crypt v1 uses the static key with the client's inverse key direction")
+func testTlsCryptV1Keys() throws {
+    let key = try OpenVPNStaticKey.parse(pem: interopStaticKeyPEM)
+    let crypt = TlsCrypt(clientKey: .v1(staticKey: key))
+    #expect(!crypt.isV2)
+    #expect(crypt.clientKey.encryptCipherKey == key.cipherKey2.prefix(32))
+    #expect(crypt.clientKey.encryptHMACKey == key.hmacKey2.prefix(32))
+    #expect(crypt.clientKey.decryptCipherKey == key.cipherKey1.prefix(32))
+    #expect(crypt.clientKey.decryptHMACKey == key.hmacKey1.prefix(32))
+}

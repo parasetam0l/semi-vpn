@@ -252,6 +252,27 @@ key-direction 1
 </tls-auth>
 EOF
 
+run_case tls-crypt-v1 "ready" "--tls-crypt tc.key" "" <<EOF
+proto udp
+<tls-crypt>
+$(cat tc.key)
+</tls-crypt>
+EOF
+
+run_case tls-crypt-v1-tcp "ready" "--proto tcp4-server --tls-crypt tc.key" "" <<EOF
+proto tcp
+<tls-crypt>
+$(cat tc.key)
+</tls-crypt>
+EOF
+
+run_case tls-crypt-v2 "ready" "--tls-crypt-v2 v2server.key" "" <<EOF
+proto udp
+<tls-crypt-v2>
+$(cat v2client.key)
+</tls-crypt-v2>
+EOF
+
 echo
 echo "$PASSED passed, $FAILED failed"
 if [[ $FAILED -gt 0 ]]; then

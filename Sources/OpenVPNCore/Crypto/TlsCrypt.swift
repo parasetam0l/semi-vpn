@@ -21,7 +21,8 @@ public enum TlsCryptError: Error, Sendable, Equatable {
 ///
 /// The client key file (`<tls-crypt-v2>` PEM block) contains 256 bytes of
 /// key material followed by the 299-byte wrapped client key (WKc), which the
-/// client transmits verbatim in its hard-reset V3 packet. The session's
+/// client transmits verbatim in its hard-reset V3 packet. `tls-crypt` (v1)
+/// uses the same wrapping with the 256-byte static key and no WKc. The session's
 /// wrap packet-id starts at `EARLY_NEG_START + 1` (0x0f000001) to announce
 /// early-negotiation support.
 public struct TlsCrypt: Sendable {
@@ -42,6 +43,11 @@ public struct TlsCrypt: Sendable {
         public init(kc: Data, wkc: Data) {
             self.kc = kc
             self.wkc = wkc
+        }
+
+        /// tls-crypt (v1): the shared static key, no wrapped client key.
+        public static func v1(staticKey: OpenVPNStaticKey) -> ClientKey {
+            ClientKey(kc: staticKey.rawKeyMaterial, wkc: Data())
         }
 
         /// Parses the raw decoded `<tls-crypt-v2>` PEM payload.
@@ -65,6 +71,8 @@ public struct TlsCrypt: Sendable {
     }
 
     public var clientKey: ClientKey
+    /// True for tls-crypt-v2 (a WKc is sent with the hard reset).
+    public var isV2: Bool { !clientKey.wkc.isEmpty }
     public var packetID: UInt32
     public var packetTime: UInt32
 

@@ -567,11 +567,7 @@ public enum PeerInfo {
     public static let protocolBits = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4)
         | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11)
 
-    public static func build(platform: String = "mac", extraCiphers: [String] = []) -> String {
-        var ciphers = supportedCiphers
-        for cipher in extraCiphers where !ciphers.contains(cipher) {
-            ciphers.append(cipher)
-        }
+    public static func build(platform: String = "mac", ciphers: [String] = supportedCiphers) -> String {
         let lines = [
             "IV_VER=2.7.6",
             "IV_PLAT=\(platform)",
@@ -590,9 +586,9 @@ public enum PeerInfo {
 
 /// The `key_method_2` options string our client advertises (the OCC string).
 public enum OptionsString {
-    public static func build(profile: OVPNProfile) -> String {
+    public static func build(profile: OVPNProfile, transport activeTransport: OVPNProfile.Transport? = nil) -> String {
         let transport: String
-        switch profile.transport {
+        switch activeTransport ?? profile.transport {
         case .udp: transport = "UDPv4"
         case .tcp: transport = "TCPv4_CLIENT"
         }

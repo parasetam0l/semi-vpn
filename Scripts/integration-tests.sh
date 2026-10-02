@@ -273,6 +273,26 @@ $(cat v2client.key)
 </tls-crypt-v2>
 EOF
 
+run_case tcp4-client-proto "ready" "--proto tcp4-server" "" <<'EOF'
+proto tcp4-client
+EOF
+
+run_case remote-line-proto "ready" "--proto tcp4-server" "" <<'EOF'
+proto udp
+remote 127.0.0.1 @PORT@ tcp
+EOF
+
+run_case lowercase-cipher "ready" "--data-ciphers AES-128-GCM" "" <<'EOF'
+proto udp
+cipher aes-128-gcm
+data-ciphers aes-128-gcm
+EOF
+
+run_case file-references "ready" "--tls-auth ta.key 0" "" <<'EOF'
+proto udp
+tls-auth ta.key 1
+EOF
+
 echo
 echo "$PASSED passed, $FAILED failed"
 if [[ $FAILED -gt 0 ]]; then

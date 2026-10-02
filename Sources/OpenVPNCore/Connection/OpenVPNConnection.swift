@@ -85,7 +85,11 @@ public final class OpenVPNConnection: @unchecked Sendable {
     /// the public API (packet flow, UI) hop onto it.
     private let queue = DispatchQueue(label: "com.semivpn.OpenVPNConnection", qos: .userInitiated)
 
-    // TCP transport state (profile.transport == .tcp)
+    /// The transport of the remote being connected (its own `proto`, or
+    /// the profile's).
+    private var activeTransport: OVPNProfile.Transport = .udp
+
+    // TCP transport state (activeTransport == .tcp)
     private var tcpEstablished = false
     private var tcpFramer = TCPPacketFramer()   // inbound stream reassembly
     private var tcpOutbound = Data()            // packets awaiting a full socket write
@@ -188,17 +192,18 @@ public final class OpenVPNConnection: @unchecked Sendable {
     }
 
     private func doConnect() {
+        if let issue = profile.fatalIssues.first {
+            fail(.invalidProfile(issue.message))
+            return
+        }
         guard let remote = profile.primaryRemote else {
             fail(.invalidProfile("no remote configured"))
             return
         }
-        guard profile.caPEM != nil else {
-            fail(.invalidProfile("no CA certificate"))
-            return
-        }
 
         timerActive = true
-        log("connecting to \(remote.host):\(remote.port) (\(profile.transport.rawValue))")
+        activeTransport = profile.transport(for: remote)
+        log("connecting to \(remote.host):\(remote.port) (\(activeTransport.rawValue))")
         if openTransport(remote) {
             startSession()
         }
@@ -208,7 +213,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
     /// transport is ready (UDP connects synchronously); for TCP the session
     /// starts from the connect-completion handler instead.
     private func openTransport(_ remote: OVPNProfile.Remote) -> Bool {
-        let isTCP = profile.transport == .tcp
+        let isTCP = activeTransport == .tcp
         guard let resolved = resolveRemote(remote.host, port: remote.port, stream: isTCP) else {
             fail(.socketError("cannot resolve \(remote.host)"))
             return false
@@ -365,12 +370,12 @@ public final class OpenVPNConnection: @unchecked Sendable {
             channel.debugLog = { [weak self] text in self?.log(text) }
             control = channel
 
-            let options = OptionsString.build(profile: profile)
+            let options = OptionsString.build(profile: profile, transport: activeTransport)
             clientMaterial = KeyMethod2.makeClientMaterial(
                 options: options,
                 username: profile.authUserPass?.username,
                 password: profile.authUserPass?.password,
-                peerInfo: PeerInfo.build()
+                peerInfo: PeerInfo.build(ciphers: profile.announcedCiphers)
             )
 
             channel.sendHardReset()
@@ -406,7 +411,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
     private func sendWire(_ packet: Data) {
         packetObserver?(true, packet)
         guard socketFD >= 0 else { return }
-        if profile.transport == .tcp {
+        if activeTransport == .tcp {
             guard tcpEstablished else { return }
             tcpOutbound.append(TCPPacketFramer.frame(packet))
             flushTCPOutbound()
@@ -477,7 +482,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
 
     private func drainTransport() {
         var buffer = [UInt8](repeating: 0, count: 65536)
-        if profile.transport == .tcp {
+        if activeTransport == .tcp {
             while true {
                 let n = recv(socketFD, &buffer, buffer.count, 0)
                 if n > 0 {

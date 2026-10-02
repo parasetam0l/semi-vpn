@@ -110,10 +110,14 @@ guard let profileText = try? String(contentsOfFile: profilePath, encoding: .utf8
 
 var profile: OVPNProfile
 do {
-    profile = try OVPNParser().parse(profileText)
+    let baseDirectory = URL(fileURLWithPath: profilePath).deletingLastPathComponent()
+    profile = try OVPNParser().parse(OVPNProfileInliner.inline(profileText, baseDirectory: baseDirectory))
 } catch {
     print("error: profile parse failed: \(error)")
     exit(1)
+}
+for issue in profile.issues {
+    print("\(issue.severity == .error ? "error" : "warning"): \(issue.message)")
 }
 if let authUser = options.authUser {
     profile.authUserPass = OVPNProfile.AuthUserPass(username: authUser, password: options.authPass ?? "")

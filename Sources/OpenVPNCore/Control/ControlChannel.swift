@@ -16,6 +16,8 @@ struct SendEntry: Sendable {
     var nextTry: TimeInterval
     var timeout: TimeInterval
     var acked: Bool
+    /// When the packet was first transmitted (nil until sent).
+    var firstSent: TimeInterval? = nil
 }
 
 /// The reliable control-channel transport.
@@ -33,7 +35,7 @@ struct SendEntry: Sendable {
 public final class ControlChannel: @unchecked Sendable {
     static let maxFragmentLength = 1200
     static let maxAcksPerPacket = 4
-    static let handshakeWindow: TimeInterval = 60
+    static let maxRetransmitTimeout: TimeInterval = 8
     static let initialTimeout: TimeInterval = 1.0
     static let ackCoalesce: TimeInterval = 0.2
 
@@ -153,7 +155,11 @@ public final class ControlChannel: @unchecked Sendable {
     /// Sends the oldest unacked packet, carrying the current ACK vector.
     private func flushSendQueue() {
         guard let index = sendQueue.indices.first(where: { !sendQueue[$0].acked }) else { return }
-        sendQueue[index].nextTry = Date().timeIntervalSince1970 + sendQueue[index].timeout
+        let now = Date().timeIntervalSince1970
+        sendQueue[index].nextTry = now + sendQueue[index].timeout
+        if sendQueue[index].firstSent == nil {
+            sendQueue[index].firstSent = now
+        }
         sendWire(buildPacket(for: sendQueue[index]))
     }
 
@@ -417,16 +423,46 @@ public final class ControlChannel: @unchecked Sendable {
         guard let index = sendQueue.indices.first(where: {
             !sendQueue[$0].acked && sendQueue[$0].nextTry <= now
         }) else { return false }
-        sendQueue[index].timeout = min(sendQueue[index].timeout * 2, Self.handshakeWindow)
+        if sendQueue[index].firstSent == nil {
+            sendQueue[index].firstSent = now
+        } else {
+            sendQueue[index].timeout = min(sendQueue[index].timeout * 2, Self.maxRetransmitTimeout)
+        }
         sendQueue[index].nextTry = now + sendQueue[index].timeout
         sendWire(buildPacket(for: sendQueue[index]))
         return true
     }
 
-    /// True when the oldest unacked packet has exceeded the handshake window.
-    public var handshakeTimedOut: Bool {
-        guard let oldest = sendQueue.first(where: { !$0.acked }) else { return false }
-        return Date().timeIntervalSince1970 > oldest.nextTry + Self.handshakeWindow
+    /// True when a packet has stayed unacknowledged for longer than
+    /// `window` seconds since it was first sent: the peer is gone or the
+    /// control channel is broken (OpenVPN's "TLS key negotiation failed").
+    public func handshakeTimedOut(now: TimeInterval, window: TimeInterval) -> Bool {
+        sendQueue.contains { entry in
+            guard !entry.acked, let firstSent = entry.firstSent else { return false }
+            return now - firstSent > window
+        }
+    }
+
+    /// Checks that a raw packet is authentic for this session (wrapping
+    /// HMAC/AEAD and session-id) without processing it. Used before acting
+    /// on packets that change state outside the reliable layer.
+    public func isAuthentic(_ wire: Data) -> Bool {
+        let wire = Data(wire)
+        guard wire.count >= 9 else { return false }
+        let packet: Data
+        if let tlsAuth {
+            guard let unwrapped = tlsAuth.unwrap(wire) else { return false }
+            packet = unwrapped
+        } else if let tlsCrypt {
+            guard let unwrapped = try? tlsCrypt.unwrap(header: Data(wire.prefix(9)), data: wire.dropFirst(9)) else {
+                return false
+            }
+            packet = wire.prefix(9) + unwrapped
+        } else {
+            packet = wire
+        }
+        guard let remoteSessionID else { return false }
+        return packet.subdata(in: 1..<9) == remoteSessionID
     }
 
     public var hasUnackedPackets: Bool {

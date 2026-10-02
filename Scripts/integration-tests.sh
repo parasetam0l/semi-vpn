@@ -26,7 +26,11 @@ WORK="$(mktemp -d -t semivpn-it)"
 SERVER_PID=""
 cleanup() {
     [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null
-    rm -rf "$WORK"
+    if [[ -n "${KEEP_WORK:-}" ]]; then
+        echo "logs kept in $WORK"
+    else
+        rm -rf "$WORK"
+    fi
 }
 trap cleanup EXIT
 
@@ -68,6 +72,43 @@ user="$(sed -n 1p "$1")"; pass="$(sed -n 2p "$1")"
 [ "$user" = "alice" ] && [ "$pass" = "correct horse" ]
 EOF
 chmod +x verify-pass.sh
+
+cat > verify-once.sh <<'EOF'
+#!/bin/sh
+# Accepts the password exactly once: later logins must use the auth-token.
+user="$(sed -n 1p "$1")"; pass="$(sed -n 2p "$1")"
+[ -e once.used ] && exit 1
+[ "$user" = "alice" ] && [ "$pass" = "123456" ] && touch once.used
+EOF
+chmod +x verify-once.sh
+
+# Management-interface helper: `mgmt.py SOCKET after SECONDS CMD...` sends
+# commands after a delay; `mgmt.py SOCKET pending` answers client-connect
+# requests with AUTH_PENDING and approves them two seconds later.
+cat > mgmt.py <<'EOF'
+import socket, sys, time
+path, mode = sys.argv[1], sys.argv[2]
+for _ in range(100):
+    try:
+        s = socket.socket(socket.AF_UNIX); s.connect(path); break
+    except OSError:
+        time.sleep(0.1)
+f = s.makefile("rw")
+def send(cmd):
+    f.write(cmd + "\n"); f.flush()
+if mode == "after":
+    time.sleep(float(sys.argv[3]))
+    for cmd in sys.argv[4:]:
+        send(cmd); time.sleep(0.3)
+    time.sleep(1)
+elif mode == "pending":
+    for line in f:
+        if line.startswith(">CLIENT:CONNECT,") or line.startswith(">CLIENT:REAUTH,"):
+            cid, kid = line.strip().split(",")[1:3]
+            send(f"client-pending-auth {cid} {kid} OPEN_URL:https://auth.invalid/login 30")
+            time.sleep(2)
+            send(f"client-auth-nt {cid} {kid}")
+EOF
 
 cat > server.conf <<EOF
 mode server
@@ -140,11 +181,12 @@ PASSED=0
 FAILED=0
 FAILED_NAMES=()
 
-# run_case NAME EXPECT "SERVER ARGS" "CLI ARGS" < profile-directives
+# run_case NAME EXPECT "SERVER ARGS" "CLI ARGS" ["BACKGROUND COMMAND"] < profile-directives
 #   EXPECT: ready | held | fail:<regex> | timeout
 #   Optional checks after `;`: clientlog:<regex> serverlog:<regex> !serverlog:<regex>
+#   The background command runs alongside the client (e.g. management actions).
 run_case() {
-    local name="$1" expect="$2" server_args="$3" cli_args="$4"
+    local name="$1" expect="$2" server_args="$3" cli_args="$4" background="${5:-}"
     if [[ -n "$FILTER" && "$name" != *"$FILTER"* ]]; then
         cat > /dev/null
         return
@@ -165,9 +207,18 @@ run_case() {
 
     local outcome_expect="${expect%%;*}" checks=""
     [[ "$expect" == *";"* ]] && checks="${expect#*;}"
+    local bg_pid=""
+    if [[ -n "$background" ]]; then
+        (eval "$background") > "$WORK/$name.bg.log" 2>&1 &
+        bg_pid=$!
+        sleep 1   # let the helper attach to the management socket first
+    fi
     "$CLI" "$profile" --timeout 20 ${cargs[@]+"${cargs[@]}"} > "$clog" 2>&1
     local status=$?
+    sleep 0.5
+    [[ -n "$bg_pid" ]] && kill "$bg_pid" 2>/dev/null
     stop_server
+    rm -f once.used
 
     local ok=1 reason=""
     case "$outcome_expect" in
@@ -211,7 +262,7 @@ proto tcp
 remote-cert-tls server
 EOF
 
-run_case udp-data-channel-pings "held;clientlog:received ping" "" "--hold 3" <<'EOF'
+run_case udp-data-channel-pings "held;clientlog:data channel verified" "" "--hold 3" <<'EOF'
 proto udp
 EOF
 
@@ -291,6 +342,92 @@ EOF
 run_case file-references "ready" "--tls-auth ta.key 0" "" <<'EOF'
 proto udp
 tls-auth ta.key 1
+EOF
+
+# MARK: Connection state machine
+
+AUTH_SERVER="--script-security 2 --auth-user-pass-verify verify-pass.sh via-file"
+
+run_case auth-success "ready" "$AUTH_SERVER" "--auth-user-pass alice 'correct horse'" <<'EOF'
+proto udp
+auth-user-pass
+EOF
+
+run_case auth-inline-credentials "ready" "$AUTH_SERVER" "" <<'EOF'
+proto udp
+auth-user-pass
+<auth-user-pass>
+alice
+correct horse
+</auth-user-pass>
+EOF
+
+# AUTH_FAILED arrives in reply to PUSH_REQUEST and must end the session
+# (it used to be ignored, looping forever).
+run_case auth-failed-udp "fail:Authentication failed" "$AUTH_SERVER" "--auth-user-pass alice wrong" <<'EOF'
+proto udp
+auth-user-pass
+EOF
+
+run_case auth-failed-tcp "fail:Authentication failed" "--proto tcp4-server $AUTH_SERVER" "--auth-user-pass alice wrong" <<'EOF'
+proto tcp
+auth-user-pass
+EOF
+
+# A tls-auth key mismatch makes the server drop everything: the hand-window
+# must expire and the client must retry instead of hanging in "connecting".
+run_case handshake-timeout "timeout;clientlog:handshake timed out;clientlog:reconnecting" "--tls-auth tc.key 0" "--timeout 9" <<EOF
+proto udp
+hand-window 3
+key-direction 1
+<tls-auth>
+$(cat ta.key)
+</tls-auth>
+EOF
+
+run_case remote-failover "ready;clientlog:connection refused" "" "" <<'EOF'
+proto udp
+remote 127.0.0.1 1
+remote 127.0.0.1 @PORT@
+EOF
+
+run_case exit-notify-on-disconnect "held;serverlog:exit message received" "--verb 7" "--hold 2" <<'EOF'
+proto udp
+EOF
+
+run_case server-restart "held;clientlog:Server requested a reconnect;clientlog:attempt 1" \
+    "--management $WORK/mgmt.sock unix" "--hold 6" \
+    "python3 mgmt.py $WORK/mgmt.sock after 2 'client-kill 0'" <<'EOF'
+proto udp
+EOF
+
+run_case server-halt "fail:disconnected this client" \
+    "--management $WORK/mgmt.sock unix" "--hold 6" \
+    "python3 mgmt.py $WORK/mgmt.sock after 2 'client-kill 0 HALT'" <<'EOF'
+proto udp
+EOF
+
+# The password is valid once; the reconnect forced by the server must
+# authenticate with the pushed auth-token instead.
+run_case auth-token-reconnect "held;clientlog:received auth-token;clientlog:Server requested a reconnect" \
+    "--script-security 2 --auth-user-pass-verify verify-once.sh via-file --auth-gen-token 60 --management $WORK/mgmt.sock unix" \
+    "--auth-user-pass alice 123456 --hold 6" \
+    "python3 mgmt.py $WORK/mgmt.sock after 2 'client-kill 0'" <<'EOF'
+proto udp
+auth-user-pass
+EOF
+
+run_case auth-pending "ready;clientlog:authentication pending" \
+    "--management $WORK/mgmt.sock unix --management-client-auth" "--auth-user-pass alice x" \
+    "python3 mgmt.py $WORK/mgmt.sock pending" <<'EOF'
+proto udp
+auth-user-pass
+EOF
+
+ROUTES=""
+for i in $(seq 1 120); do ROUTES="$ROUTES --push \"route 10.$((i / 250)).$((i % 250)).0 255.255.255.0\""; done
+run_case push-continuation "ready;clientlog:continues in the next message;clientlog:routes=120" "$ROUTES" "" <<'EOF'
+proto udp
 EOF
 
 echo

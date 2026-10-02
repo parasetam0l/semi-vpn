@@ -188,6 +188,9 @@ while true {
         if readyAt == nil {
             readyAt = Date()
             print("SUCCESS: tunnel established")
+            if let pushed = connection.pushedOptions {
+                print("pushed: ip=\(pushed.ifconfigLocal ?? "-") routes=\(pushed.routes.count) dns=\(pushed.dnsServers.joined(separator: " ")) search=\(pushed.searchDomains.joined(separator: " ")) redirect=\(pushed.redirectGateway) mtu=\(pushed.tunMTU.map(String.init) ?? "-")")
+            }
             guard options.hold != nil else {
                 exit(0)
             }

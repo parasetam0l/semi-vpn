@@ -15,7 +15,6 @@ public enum OpenVPNOpcode: UInt8, Sendable {
     case dataV2 = 9
     case controlHardResetClientV3 = 10
     case controlWKCv1 = 11
-    case authFailedV1 = 14
 
     public var isData: Bool {
         switch self {
@@ -56,6 +55,12 @@ public enum OpenVPNProtocolError: Error, Sendable, Equatable {
 public enum PacketHeader {
     public static func encode(opcode: OpenVPNOpcode, keyID: UInt8) -> UInt8 {
         (opcode.rawValue << 3) | (keyID & 0x7)
+    }
+
+    /// The opcode of a wire packet, or nil for opcodes this client does not
+    /// know (such packets must be dropped, not guessed).
+    public static func opcode(of byte: UInt8) -> OpenVPNOpcode? {
+        OpenVPNOpcode(rawValue: (byte >> 3) & 0x1F)
     }
 
     public static func decode(_ byte: UInt8) -> (opcode: OpenVPNOpcode, keyID: UInt8) {

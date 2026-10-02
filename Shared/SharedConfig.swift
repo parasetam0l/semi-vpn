@@ -549,6 +549,7 @@ public enum SharedConfig {
     public static func deleteProfile(name: String) {
         ProfileKeychain.delete(account: name)
         ProfileKeychain.removeLegacyFile(name: name)
+        CredentialStore.delete(profile: name)
     }
 
     private static func saveProfileFile(_ text: String, name: String) -> Bool {

@@ -44,6 +44,8 @@ struct ContentView: View {
     @State private var perAppConfigSaved = false
     @State private var vpnConfigSaved = false
     @State private var workspaceSection: WorkspaceSection = .overview
+    /// Editing saved credentials from the profile list (no connect).
+    @State private var credentialEditor: VPNManager.CredentialRequest?
 
     private var fullTunnel: Bool { routingMode.usesFullTunnel }
     private var domainRouting: Bool { routingMode.includesBrowser }
@@ -101,6 +103,30 @@ struct ContentView: View {
             ErrorDialog(title: "Connection Error", message: errorMessage ?? "") {
                 showConnectError = false
             }
+        }
+        .sheet(item: $vpnManager.credentialRequest) { request in
+            CredentialPrompt(request: request, purpose: .connect) { credentials, remember in
+                vpnManager.credentialRequest = nil
+                connect(credentials: credentials, remember: remember)
+            } onCancel: {
+                vpnManager.credentialRequest = nil
+            }
+        }
+        .sheet(item: $credentialEditor) { request in
+            CredentialPrompt(request: request, purpose: .save) { credentials, _ in
+                CredentialStore.save(credentials, profile: request.profileName)
+                credentialEditor = nil
+            } onCancel: {
+                credentialEditor = nil
+            } onForget: {
+                CredentialStore.delete(profile: request.profileName)
+                credentialEditor = nil
+            }
+        }
+        .onReceive(vpnManager.$lastError) { message in
+            guard let message else { return }
+            errorMessage = message
+            showConnectError = true
         }
         .alert("Add domain", isPresented: $showDomainSubdomainPrompt) {
             Button("Add subdomains") {
@@ -985,6 +1011,17 @@ struct ContentView: View {
                 .buttonStyle(SecondaryButtonStyle())
                 .controlSize(.small)
                 .disabled(configurationLocked)
+            }
+            if let request = credentialEditorRequest(for: name) {
+                Button {
+                    credentialEditor = request
+                } label: {
+                    Image(systemName: CredentialStore.load(profile: name) == nil ? "key" : "key.fill")
+                        .foregroundStyle(SemiTheme.violet)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help("Saved credentials")
             }
             Button {
                 deleteProfile(name)
@@ -2284,7 +2321,7 @@ struct ContentView: View {
         }
     }
 
-    private func connect() {
+    private func connect(credentials: TunnelSecrets.Credentials? = nil, remember: Bool = false) {
         guard let selectedProfile else { return }
         errorMessage = nil
         connecting = true
@@ -2292,8 +2329,11 @@ struct ContentView: View {
         saveCurrentSelection()
         Task {
             do {
-                try await vpnManager.start()
+                try await vpnManager.start(credentials: credentials, remember: remember)
                 AppLogger.log("connect started")
+            } catch VPNManager.StartError.credentialsRequired {
+                // The credential sheet is presented from vpnManager.credentialRequest.
+                AppLogger.log("connect: waiting for credentials")
             } catch {
                 errorMessage = "Failed to start VPN: \(error.localizedDescription)"
                 showConnectError = true
@@ -2579,6 +2619,87 @@ struct ContentView: View {
                     .providerBundleIdentifier == "com.semivpn.app.TunnelProvider" else { return false }
                 return $0.routingMethod == .sourceApplication && ($0.copyAppRules()?.isEmpty == false)
             }) ?? false
+        }
+    }
+
+    /// The credentials a profile can store, or nil when it needs none.
+    private func credentialEditorRequest(for name: String) -> VPNManager.CredentialRequest? {
+        guard let text = SharedConfig.loadProfile(name: name),
+              let profile = try? OVPNParser().parse(text) else { return nil }
+        let needsUserPass = profile.requiresAuthUserPass && profile.authUserPass?.password == nil
+        guard needsUserPass || profile.requiresKeyPassphrase else { return nil }
+        return VPNManager.CredentialRequest(
+            profileName: name,
+            needsUsernamePassword: needsUserPass,
+            needsKeyPassphrase: profile.requiresKeyPassphrase,
+            username: CredentialStore.load(profile: name)?.username
+        )
+    }
+
+    /// Asks for a profile's username/password and/or key passphrase.
+    private struct CredentialPrompt: View {
+        enum Purpose { case connect, save }
+
+        let request: VPNManager.CredentialRequest
+        let purpose: Purpose
+        let onSubmit: (TunnelSecrets.Credentials, Bool) -> Void
+        let onCancel: () -> Void
+        var onForget: (() -> Void)? = nil
+
+        @State private var username = ""
+        @State private var password = ""
+        @State private var passphrase = ""
+        @State private var remember = false
+
+        private var canSubmit: Bool {
+            (!request.needsUsernamePassword || !username.isEmpty)
+                && (!request.needsKeyPassphrase || !passphrase.isEmpty)
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(purpose == .connect ? "Sign in to connect" : "Saved credentials")
+                    .font(.headline)
+                Text(request.profileName.replacingOccurrences(of: ".ovpn", with: ""))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Form {
+                    if request.needsUsernamePassword {
+                        TextField("Username", text: $username)
+                            .textContentType(.username)
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                    }
+                    if request.needsKeyPassphrase {
+                        SecureField("Private key passphrase", text: $passphrase)
+                    }
+                    if purpose == .connect {
+                        Toggle("Remember in Keychain", isOn: $remember)
+                    }
+                }
+                HStack {
+                    if let onForget, purpose == .save {
+                        Button("Forget", role: .destructive) { onForget() }
+                    }
+                    Spacer()
+                    Button("Cancel") { onCancel() }
+                        .keyboardShortcut(.cancelAction)
+                    Button(purpose == .connect ? "Connect" : "Save") {
+                        onSubmit(TunnelSecrets.Credentials(
+                            username: request.needsUsernamePassword ? username : nil,
+                            password: request.needsUsernamePassword ? password : nil,
+                            keyPassphrase: request.needsKeyPassphrase ? passphrase : nil
+                        ), remember)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSubmit)
+                }
+            }
+            .padding(20)
+            .frame(width: 380)
+            .onAppear {
+                username = request.username ?? ""
+            }
         }
     }
 

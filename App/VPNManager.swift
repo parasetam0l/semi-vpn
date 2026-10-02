@@ -17,13 +17,46 @@ final class VPNManager: ObservableObject {
     @Published var status: NEVPNStatus = .invalid
     @Published var selection: SharedConfig.Selection?
     @Published var hasSavedConfiguration = false
+    /// The reason the tunnel last stopped on its own (e.g. authentication
+    /// failed), for the UI.
+    @Published var lastError: String?
+    /// Set when connecting needs credentials the app does not have; the UI
+    /// prompts and calls `start(credentials:remember:)` again.
+    @Published var credentialRequest: CredentialRequest?
+
+    /// What a profile needs before it can connect.
+    struct CredentialRequest: Identifiable, Equatable {
+        let profileName: String
+        let needsUsernamePassword: Bool
+        let needsKeyPassphrase: Bool
+        var username: String?
+        var id: String { profileName }
+    }
+
+    enum StartError: LocalizedError {
+        case credentialsRequired(CredentialRequest)
+
+        var errorDescription: String? {
+            switch self {
+            case .credentialsRequired(let request):
+                if request.needsUsernamePassword && request.needsKeyPassphrase {
+                    return "Enter the username, password and private-key passphrase for this profile."
+                }
+                return request.needsUsernamePassword
+                    ? "Enter the username and password for this profile."
+                    : "Enter the passphrase of this profile's private key."
+            }
+        }
+    }
+
+    /// Whether the credentials used for the running tunnel may stay in the
+    /// shared keychain item after disconnecting.
+    private var keepCredentialsAfterStop = true
 
     private let tunnelProviderBundleIdentifier = "com.semivpn.app.TunnelProvider"
     private let proxyHelperBundleIdentifier = "com.semivpn.proxy"
     private var proxyHelperProcess: Process?
     private var statusObserver: NSObjectProtocol?
-    private var distributedConnectObserver: NSObjectProtocol?
-    private var distributedDisconnectObserver: NSObjectProtocol?
     private var tunnelManager: NETunnelProviderManager?
 
     static var proxyHelperAppURL: URL? {
@@ -112,24 +145,6 @@ final class VPNManager: ObservableObject {
         ensureProxyHelperRunning()
         loadSelection()
         updateProxyAvailability()
-        distributedConnectObserver = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.semivpn.app.requestConnect"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                AppLogger.log("distributed: connect requested")
-                try? await self?.start()
-            }
-        }
-        distributedDisconnectObserver = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.semivpn.app.requestDisconnect"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            AppLogger.log("distributed: disconnect requested")
-            self?.stop()
-        }
         Task { [weak self] in
             await self?.restoreSavedManagerStatus()
         }
@@ -139,12 +154,6 @@ final class VPNManager: ObservableObject {
         stopProxyHelper()
         if let statusObserver {
             NotificationCenter.default.removeObserver(statusObserver)
-        }
-        if let distributedConnectObserver {
-            DistributedNotificationCenter.default().removeObserver(distributedConnectObserver)
-        }
-        if let distributedDisconnectObserver {
-            DistributedNotificationCenter.default().removeObserver(distributedDisconnectObserver)
         }
     }
 
@@ -185,9 +194,13 @@ final class VPNManager: ObservableObject {
     /// Configures and starts the packet tunnel. In selected-app mode the
     /// system scopes the packet tunnel to `NEAppRule`s; in all-apps mode the
     /// same provider installs the normal default route.
-    func start() async throws {
+    /// - Parameter credentials: entered by the user for this connection;
+    ///   saved credentials are used when nil.
+    /// - Parameter remember: save the entered credentials in the keychain.
+    func start(credentials: TunnelSecrets.Credentials? = nil, remember: Bool = false) async throws {
         SharedConfig.ensureDirectories()
         AppLogger.log("start: begin")
+        await MainActor.run { self.lastError = nil }
 
         guard let selection,
               let profileText = SharedConfig.loadProfile(name: selection.profileName) else {
@@ -210,6 +223,27 @@ final class VPNManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Invalid profile: \(error.localizedDescription)"])
         }
         let serverAddress = profile.remotes.first?.host ?? "semi-vpn"
+
+        // Credentials: inline <auth-user-pass>, entered now, or saved.
+        let saved = CredentialStore.load(profile: selection.profileName)
+        let effective = credentials ?? saved ?? TunnelSecrets.Credentials()
+        let needsUserPass = profile.requiresAuthUserPass && profile.authUserPass?.password == nil
+            && ((effective.username ?? "").isEmpty || effective.password == nil)
+        let needsPassphrase = profile.requiresKeyPassphrase && (effective.keyPassphrase ?? "").isEmpty
+        if needsUserPass || needsPassphrase {
+            let request = CredentialRequest(
+                profileName: selection.profileName,
+                needsUsernamePassword: profile.requiresAuthUserPass && profile.authUserPass?.password == nil,
+                needsKeyPassphrase: profile.requiresKeyPassphrase,
+                username: effective.username ?? saved?.username
+            )
+            await MainActor.run { self.credentialRequest = request }
+            throw StartError.credentialsRequired(request)
+        }
+        if let credentials, remember {
+            CredentialStore.save(credentials, profile: selection.profileName)
+        }
+        keepCredentialsAfterStop = credentials == nil || remember
 
         let existingTunnels = (try? await NETunnelProviderManager.loadAllFromPreferences()) ?? []
         let wantsPerApp = !selection.fullTunnel
@@ -252,14 +286,22 @@ final class VPNManager: ObservableObject {
         // Keep the provider alive through sleep so its wake() callback can
         // rebuild the raw OpenVPN transport on the resumed physical network.
         tunnelProtocol.disconnectOnSleep = false
-        tunnelProtocol.providerConfiguration = [
-            SharedConfig.profileKey: profileText,
+        var providerConfiguration: [String: Any] = [
             SharedConfig.selectionKey: selection.appIdentifiers,
             SharedConfig.fullTunnelKey: selection.fullTunnel,
             SharedConfig.domainRoutingKey: selection.domainRouting,
             SharedConfig.routingModeKey: selection.routingMode.rawValue,
             SharedConfig.nativePerAppKey: wantsPerApp,
         ]
+        // The profile (private key) and credentials go to the shared
+        // keychain when available; only then are they kept out of the
+        // Network Extension preferences.
+        let secrets = TunnelSecrets.providerConfigurationEntries(profileText: profileText, credentials: effective)
+        providerConfiguration.merge(secrets) { _, new in new }
+        if secrets[TunnelSecrets.storedInKeychainKey] == nil {
+            AppLogger.log("start: shared keychain unavailable; secrets are stored in the VPN configuration")
+        }
+        tunnelProtocol.providerConfiguration = providerConfiguration
         tunnelManager.protocolConfiguration = tunnelProtocol
         if wantsPerApp {
             tunnelManager.appRules = appRules
@@ -363,6 +405,9 @@ final class VPNManager: ObservableObject {
                 }
             }
 
+            if !self.keepCredentialsAfterStop {
+                TunnelSecrets.forgetSharedCredentials()
+            }
             if self.tunnelManager === manager {
                 self.tunnelManager = nil
                 self.status = .disconnected
@@ -418,9 +463,30 @@ final class VPNManager: ObservableObject {
                 AppLogger.log("VPN status connected after \(previousStatus.rawValue) — refreshing proxy helper")
                 self.restartProxyHelper()
             }
+            if newStatus == .disconnected, previousStatus != .disconnected, previousStatus != .disconnecting {
+                self.reportLastDisconnectError(manager)
+            }
         }
         status = manager.connection.status
         updateProxyAvailability()
+    }
+
+    /// Fetches why the tunnel stopped on its own and shows it; a rejected
+    /// password is forgotten so the next connect asks again.
+    private func reportLastDisconnectError(_ manager: NETunnelProviderManager) {
+        let profileName = selection?.profileName
+        manager.connection.fetchLastDisconnectError { [weak self] error in
+            guard let error else { return }
+            let message = (error as NSError).localizedDescription
+            AppLogger.log("tunnel stopped: \(message)")
+            DispatchQueue.main.async {
+                if message.hasPrefix("Authentication failed"), let profileName {
+                    CredentialStore.forgetPassword(profile: profileName)
+                    TunnelSecrets.forgetSharedCredentials()
+                }
+                self?.lastError = message
+            }
+        }
     }
 
     // MARK: - Native app rules

@@ -101,7 +101,7 @@ for debug_dylib in \
         printf 'Missing debug dylib: %s\n' "$debug_dylib" >&2
         exit 1
     }
-    if otool -L "$debug_dylib" | rg -q '/opt/homebrew/opt/openssl@3'; then
+    if otool -L "$debug_dylib" | grep -Eq '/(opt/homebrew|usr/local)/(opt|Cellar)/openssl'; then
         printf 'Debug dylib still links to Homebrew OpenSSL: %s\n' "$debug_dylib" >&2
         exit 1
     fi

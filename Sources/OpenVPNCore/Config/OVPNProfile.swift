@@ -203,6 +203,10 @@ public struct OVPNProfile: Sendable {
         self.rawDirectives = rawDirectives
     }
 
+    /// The `auth` digest in effect: OpenVPN defaults to SHA1 when the profile
+    /// has no `auth` directive (used by tls-auth and the CBC data channel).
+    public var effectiveDigest: Digest { digest ?? .sha1 }
+
     /// The first remote, or nil if none configured.
     public var primaryRemote: Remote? { remotes.first }
 }

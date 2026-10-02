@@ -142,7 +142,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
     public init(profile: OVPNProfile) {
         self.profile = profile
         self.negotiatedCipher = profile.cipher
-        self.negotiatedDigest = profile.digest ?? .sha256
+        self.negotiatedDigest = profile.effectiveDigest
     }
 
     // MARK: - Lifecycle
@@ -319,26 +319,29 @@ public final class OpenVPNConnection: @unchecked Sendable {
         lastPingSend = 0
         state = .connecting
 
+        var tlsAuth: TLSAuth?
+        var tlsCrypt: TlsCrypt?
+        if let pem = profile.tlsAuthPEM {
+            guard let staticKey = try? OpenVPNStaticKey.parse(pem: pem) else {
+                fail(.invalidProfile("the <tls-auth> key is not a valid OpenVPN static key"))
+                return
+            }
+            // tls-auth: the HMAC digest is the profile's `auth` setting
+            // (SHA1 by default); the key slots follow key-direction.
+            let keys = staticKey.tlsAuthKeys(direction: profile.keyDirection)
+            tlsAuth = TLSAuth(digest: profile.effectiveDigest, sendKey: keys.send, verifyKey: keys.verify)
+        } else if let tlsCryptV2 = profile.tlsCryptV2PEM {
+            guard let decoded = PEMKeyExtractor.extractKey(from: tlsCryptV2),
+                  let clientKey = TlsCrypt.ClientKey.parse(decoded: decoded) else {
+                fail(.invalidProfile("the <tls-crypt-v2> key is not a valid client key"))
+                return
+            }
+            // tls-crypt-v2: wrap all control packets with the client key.
+            tlsCrypt = TlsCrypt(clientKey: clientKey)
+        }
+
         do {
             let tls = try TLSEngine(caPEM: ca, certPEM: profile.certPEM, keyPEM: profile.keyPEM)
-
-            var tlsAuth: TLSAuth?
-            var tlsCrypt: TlsCrypt?
-            if let staticKey = try? profile.tlsAuthPEM.flatMap({ try OpenVPNStaticKey.parse(pem: $0) }) {
-                // tls-auth: the HMAC digest is the profile's `auth` setting;
-                // a client with key-direction 1 signs with keys[1] and
-                // verifies with keys[0].
-                tlsAuth = TLSAuth(
-                    digest: profile.digest ?? .sha256,
-                    sendKey: staticKey.hmacKey2,
-                    verifyKey: staticKey.hmacKey1
-                )
-            } else if let tlsCryptV2 = profile.tlsCryptV2PEM,
-                      let decoded = PEMKeyExtractor.extractKey(from: tlsCryptV2),
-                      let clientKey = TlsCrypt.ClientKey.parse(decoded: decoded) {
-                // tls-crypt-v2: wrap all control packets with the client key.
-                tlsCrypt = TlsCrypt(clientKey: clientKey)
-            }
 
             let sessionID = KeyMethod2.randomBytes(8)
             let channel = ControlChannel(

@@ -21,7 +21,11 @@ public enum TLSAuthError: Error, Sendable, Equatable {
 ///
 /// Directional keys (verified against OpenVPN 2.7 wire captures): a client
 /// with `key-direction 1` signs outgoing packets with `keys[1]` of the
-/// static key file and verifies incoming packets with `keys[0]`.
+/// static key file and verifies incoming packets with `keys[0]`; see
+/// `OpenVPNStaticKey.tlsAuthKeys(direction:)`.
+///
+/// Like OpenVPN (`hmac_ctx_init`), only the first digest-size bytes of the
+/// 64-byte HMAC key slot are used as the HMAC key.
 public struct TLSAuth: Sendable {
     public var digest: OVPNProfile.Digest
     public var sendKey: Data
@@ -83,6 +87,7 @@ public struct TLSAuth: Sendable {
 
     private func hmac(_ data: Data, key: Data) -> Data {
         var mac = [UInt8](repeating: 0, count: tagLength)
+        let key = key.prefix(tagLength)
         let alg: CCHmacAlgorithm
         switch digest {
         case .sha1: alg = CCHmacAlgorithm(kCCHmacAlgSHA1)

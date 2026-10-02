@@ -58,6 +58,9 @@ public final class ControlChannel: @unchecked Sendable {
     private var lruAcks: [UInt32] = []
     private var lastAckSent: TimeInterval = 0
     private var sentWKCOnce = false
+    /// Replay filter over the tls-auth / tls-crypt wrapping packet-id
+    /// (`time << 32 | id`), as OpenVPN applies to wrapped control packets.
+    private var wrapReplay = ReplayWindow()
 
     private let sendWire: (Data) -> Void
 
@@ -252,16 +255,19 @@ public final class ControlChannel: @unchecked Sendable {
     public func receive(_ wire: Data) throws -> [Data] {
         guard wire.count >= 9 else { throw ControlChannelError.malformedPacket }
 
+        let wire = Data(wire)
         let packet: Data
         if let tlsAuth {
             guard let unwrapped = tlsAuth.unwrap(wire) else {
                 throw ControlChannelError.malformedPacket
             }
+            try checkWrapReplay(wire.subdata(in: (9 + tlsAuth.tagLength)..<(9 + tlsAuth.tagLength + 8)))
             packet = unwrapped
         } else if let tlsCrypt {
             guard let unwrapped = try? tlsCrypt.unwrap(header: Data(wire.prefix(9)), data: wire.dropFirst(9)) else {
                 throw ControlChannelError.malformedPacket
             }
+            try checkWrapReplay(wire.subdata(in: 9..<17))
             // Rebuild the plain [opcode][sid] + body for parsing.
             packet = wire.prefix(9) + unwrapped
         } else {
@@ -330,6 +336,15 @@ public final class ControlChannel: @unchecked Sendable {
             debugLog("no plaintext after packet (pid \(body.packetID), payload \(body.payload.count)B)")
         }
         return messages
+    }
+
+    /// Rejects replayed wrapped packets. Only called after the packet
+    /// authenticated, so forged packets cannot advance the window.
+    private func checkWrapReplay(_ pid: Data) throws {
+        let value = pid.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        guard wrapReplay.accept(value) else {
+            throw ControlChannelError.malformedPacket
+        }
     }
 
     /// Buffers out-of-order fragments and feeds complete, in-order

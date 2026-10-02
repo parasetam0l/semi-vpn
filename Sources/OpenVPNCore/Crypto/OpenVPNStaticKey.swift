@@ -31,6 +31,23 @@ public struct OpenVPNStaticKey: Sendable, Equatable {
         self.hmacKey2 = hmacKey2
     }
 
+    /// The tls-auth HMAC keys for a client (OpenVPN `key_direction_state_init`):
+    /// - no direction (bidirectional): `keys[0]` both ways
+    /// - `key-direction 1` (normal client): send `keys[1]`, verify `keys[0]`
+    /// - `key-direction 0`: send `keys[0]`, verify `keys[1]`
+    public func tlsAuthKeys(direction: Int?) -> (send: Data, verify: Data) {
+        switch direction {
+        case 1: return (hmacKey2, hmacKey1)
+        case 0: return (hmacKey1, hmacKey2)
+        default: return (hmacKey1, hmacKey1)
+        }
+    }
+
+    /// All 256 bytes in file order (`keys[0]` then `keys[1]`).
+    public var rawKeyMaterial: Data {
+        cipherKey1 + hmacKey1 + cipherKey2 + hmacKey2
+    }
+
     public static func parse(pem: String) throws -> OpenVPNStaticKey {
         var hexLines: [String] = []
         var inBody = false

@@ -215,6 +215,43 @@ run_case udp-data-channel-pings "held;clientlog:received ping" "" "--hold 3" <<'
 proto udp
 EOF
 
+# tls-auth: HMAC keys are truncated to the digest size; SHA1 is the default.
+for digest in SHA512 SHA256 SHA1; do
+    run_case "tls-auth-$digest" "ready" "--tls-auth ta.key 0 --auth $digest" "" <<EOF
+proto udp
+auth $digest
+key-direction 1
+<tls-auth>
+$(cat ta.key)
+</tls-auth>
+EOF
+done
+
+run_case tls-auth-default-digest "ready" "--tls-auth ta.key 0" "" <<EOF
+proto udp
+key-direction 1
+<tls-auth>
+$(cat ta.key)
+</tls-auth>
+EOF
+
+run_case tls-auth-bidirectional "ready" "--tls-auth ta.key" "" <<EOF
+proto udp
+<tls-auth>
+$(cat ta.key)
+</tls-auth>
+EOF
+
+run_case tls-auth-invalid-key "fail:tls-auth" "--tls-auth ta.key 0" "" <<'EOF'
+proto udp
+key-direction 1
+<tls-auth>
+-----BEGIN OpenVPN Static key V1-----
+00112233
+-----END OpenVPN Static key V1-----
+</tls-auth>
+EOF
+
 echo
 echo "$PASSED passed, $FAILED failed"
 if [[ $FAILED -gt 0 ]]; then

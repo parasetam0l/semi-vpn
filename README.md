@@ -5,7 +5,7 @@
 [![NetworkExtension](https://img.shields.io/badge/Framework-NetworkExtension-blue)](https://developer.apple.com/documentation/networkextension)
 [![OpenVPN](https://img.shields.io/badge/Protocol-OpenVPN%202.6%20%2F%202.7-brightgreen)](https://openvpn.net/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-38%20passing-success)](Tests/)
+[![Tests](https://img.shields.io/badge/Tests-71%20unit%20%2B%2059%20end--to--end-success)](Tests/)
 
 **SemiVPN** is a native macOS VPN client built completely from scratch in Swift. It implements the OpenVPN 2.6/2.7 wire protocols directly in userland—requiring **no official OpenVPN daemon**, **no legacy TUN/TAP kernel extensions**, and no external command-line utilities.
 
@@ -41,7 +41,8 @@ SemiVPN delivers unprecedented routing flexibility on macOS: connect system-wide
 - **SemiProxy Auxiliary Agent**: Lightweight background proxy helper (`com.semivpn.proxy`) registered with LaunchServices (`LSUIElement: true`) for seamless OS-level routing without Dock clutter.
 - **Modern SwiftUI Interface**: Clean dark-mode workspace organized into Overview, Routing, Browser, Profiles, and Diagnostics sections.
 - **One-Click Profile Scanner**: Automatically discovers `.ovpn` configuration profiles in your Downloads, Desktop, and Documents folders.
-- **Keychain-Backed Security**: Encrypted storage for VPN credentials and profile certificates with seamless migration fallbacks.
+- **Credentials and Keychain**: Prompts for `auth-user-pass` credentials and private-key passphrases, optionally remembers them in the Keychain, and hands profiles and secrets to the tunnel through a shared Keychain access group rather than the Network Extension preferences.
+- **Server-Driven Configuration**: Applies pushed routes (including split tunnels and `net_gateway` exclusions), DNS servers, search and split-DNS domains, topology, MTU, and `auth-token` reconnects.
 - **Integrated CLI**: Standalone `ovpn-cli` executable for testing profile handshakes and debugging connection issues without launching the UI.
 
 ---
@@ -52,7 +53,7 @@ SemiVPN offers four distinct routing modes configured directly from the **Routin
 
 | Mode | Traffic Scope | Underlying Mechanism |
 | :--- | :--- | :--- |
-| **All apps** | Entire system | Full tunnel `NEPacketTunnelProvider` setting the default IPv4 route (`0.0.0.0/0`). |
+| **All apps** | Entire system | `NEPacketTunnelProvider` that follows the server: the default route when it pushes `redirect-gateway` (or no routes), only its pushed routes for a split-tunnel server. |
 | **Selected apps only** | Only user-chosen apps | Native macOS per-app VPN via `NEAppRule`. Unselected apps route direct via standard physical interfaces. |
 | **Selected apps + browser** | Chosen apps + specified domains | Native `NEAppRule` for chosen applications plus a helper rule for `SemiProxy`, routing matched Chrome domains. |
 | **Browser only** | Specified domains only | Dedicated helper `NEAppRule` for `SemiProxy`. All other system apps remain direct. |
@@ -96,12 +97,13 @@ SemiVPN is divided into modular subsystems across the core protocol library, sys
 
 The wire-protocol engine written from scratch against OpenVPN 2.6/2.7 specifications:
 - **Transport Layer**: UDP and TCP support (`proto tcp`, uint16 length-prefixed framing, partial packet buffering).
-- **Control Channel**: TLS 1.2 and 1.3 through an OpenSSL memory-BIO abstraction layer, `tls-auth` (profile digest, 2.7 static-key layout), and `tls-crypt-v2` packet wrapping with reliable retransmission and LRU acknowledgments.
+- **Control Channel**: TLS 1.2 and 1.3 through an OpenSSL memory-BIO abstraction layer; `tls-auth` (any `auth` digest, SHA1 by default, all `key-direction` modes), `tls-crypt`, `tls-crypt-v2` and dynamic tls-crypt for renegotiations; a reliable layer with a six-packet send window, OpenVPN-style acknowledgements and replay protection of wrapped packets.
 - **Key Exchange**: `key_method_2` (length-prefixed strings), RFC 5705 Exported Keying Material (EKM) for OpenVPN 2.7 layouts, and classic PRF for 2.4/2.5 server layouts.
 - **Data Channel**: AEAD AES-GCM and AES-CBC + HMAC framing, sliding-window replay protection (default window 64, honoring custom `replay-window` directives), keepalive ping/pong, and the OpenVPN 2.7 **AEAD-epoch** format (8-byte epoch packet-id, ciphertext-then-tag layout, `OVPN-Expand-Label` keys) when negotiated via `protocol-flags ... aead-epoch`.
-- **Push Option Parsing**: Full parser for server `PUSH_REPLY` directives (cipher, ifconfig, route-gateway, topology, DNS servers, EKM, peer-id, aead-epoch, reneg-sec).
-- **Peer Verification**: Strict enforcement of `remote-cert-tls` (serverAuth EKU) and `verify-x509-name` (commonName, name-prefix, subject) prior to transmitting plaintext data. CA trust chains (including multi-cert bundles) are validated via OpenSSL.
-- **Resilient Reconnection**: PUSH_REQUEST retry loops, exponential backoff on transient network failures, automatic session refresh on server soft-resets / `reneg-sec`, and proactive re-keying before the 32-bit data packet counter exhausts.
+- **Push Option Parsing**: `PUSH_REPLY` directives including continuations (cipher, ifconfig and topology, `route`/`route-ipv6`, `redirect-gateway`, `dns` and `dhcp-option` DNS/DOMAIN, tun-mtu, peer-id, protocol-flags, reneg-sec, auth-token, block-ipv6), plus AUTH_FAILED (incl. TEMP), AUTH_PENDING, RESTART, HALT, EXIT and INFO messages.
+- **Peer Verification**: Strict enforcement of `remote-cert-tls` (key usage plus serverAuth EKU) and `verify-x509-name` (subject in OpenVPN's format, name, name-prefix) prior to transmitting plaintext data. CA trust chains (including multi-cert bundles) are validated via OpenSSL; client certificate chains (`<cert>` bundles, `extra-certs`) and passphrase-protected keys are supported.
+- **Renegotiation**: In-band key renegotiation (soft reset on a new key-id) initiated by either side on `reneg-sec`, AEAD usage limits or packet-id exhaustion, with the previous key kept for in-flight packets; aead-epoch keys follow the peer's epoch rotation.
+- **Resilient Reconnection**: `hand-window` timeouts, failover across remotes and resolved addresses (`remote-random`, `<connection>` blocks), cached server addresses when DNS is unavailable, exponential backoff, and permanent failures (authentication, certificates, HALT) reported instead of retried.
 
 ### 2. COpenVPNTLS (`Sources/COpenVPNTLS`)
 
@@ -115,7 +117,8 @@ Minimal C shim interfacing directly with OpenSSL 3:
 
 A macOS Network Extension (`NEPacketTunnelProvider`):
 - Connects the system virtual network interface (`utun`) to `SwiftOpenVPNCore`.
-- Dynamically configures IP routing, MTU, DNS servers, and search domains received from server push options.
+- Configures routes, the tunnel address (subnet and net30/p2p topologies), DNS servers, search and split-DNS domains from the push, and sizes the MTU so encrypted packets fit the physical link.
+- Rebinds the transport when the physical network changes (NWPathMonitor) and after wake.
 - Interacts with `NETunnelProviderManager` to enforce system-wide or per-app routing rules.
 
 ### 4. SemiProxy Helper (`ProxyHelper/`)
@@ -125,7 +128,8 @@ An embedded accessory application (`com.semivpn.proxy`):
 - Registered with LaunchServices via `LSRegisterURL` so macOS Network Extension Connection Policies (NECP) accurately associate the bundle identifier with `NEAppRule` across system reboots.
 - Listens dual-stack on loopback (`127.0.0.1` and `::1`) on port `49280` (HTTP CONNECT proxy) and port `49281` (local control and domain synchronization API).
 - Includes parent-process watchdog monitoring (`kill(parentPID, 0)`) to terminate cleanly when SemiVPN exits.
-- Features a fail-closed architecture: non-listed domains or requests made while disconnected are immediately rejected with a 12-second upstream connect timeout.
+- Refuses hosts that are not in the domain list. While the VPN is disconnected, listed domains connect directly by default, or are refused when "Block listed domains while the VPN is disconnected" is enabled (fail-closed).
+- Its control API only accepts loopback `Host` headers and the SemiVPN extension's pinned origin.
 
 ### 5. SemiVPN App (`App/`)
 
@@ -145,7 +149,7 @@ Located in `ChromeExtension/`, this Manifest V3 extension enables seamless domai
 - **Instant Cache-First UI**: Rendered instantly using cached rules and connection states with asynchronous background revalidation.
 - **On-The-Fly Detection**: Detects the active tab's domain and lets you add it, specify all-subdomains or exact-domain-plus-www scope, or pause/resume routing with one click.
 - **Status Badges**: Real-time toolbar icon badges reflecting domain routing state (`ON`, `OFF`, `DISC`).
-- **Fail-Closed Protection**: If SemiVPN is disconnected or a non-browser routing mode is active, the extension automatically sets an all-`DIRECT` PAC script.
+- **Disconnected Behavior**: Listed domains connect directly while the VPN is down (default), or are blocked when the app's fail-closed option is on; in that mode the PAC has no `DIRECT` fallback. Non-browser routing modes get an all-`DIRECT` PAC script. See [ChromeExtension/README.md](ChromeExtension/README.md).
 
 ### Loading the Extension
 
@@ -187,7 +191,13 @@ Exit status: `0` ready (or held successfully), `1` failed, `2` usage error, `3` 
 ```sh
 Scripts/integration-tests.sh            # all scenarios
 Scripts/integration-tests.sh tls-auth   # scenarios whose name contains "tls-auth"
+KEEP_WORK=1 Scripts/integration-tests.sh reneg   # keep client/server logs
 ```
+
+`Scripts/proxy-tests.sh` builds SemiProxy unsigned and tests the browser
+proxy and its control API on scratch ports with a scratch configuration
+(`SEMIVPN_CONTAINER`, `SEMIVPN_PROXY_PORT`, `SEMIVPN_CONTROL_PORT`), so a
+running SemiVPN is not affected.
 
 ---
 
@@ -198,7 +208,7 @@ Scripts/integration-tests.sh tls-auth   # scenarios whose name contains "tls-aut
 - **macOS 14.0 (Sonoma)** or later
 - **Xcode 15.0** or later
 - **XcodeGen**: `brew install xcodegen`
-- **OpenSSL 3**: `brew install openssl@3`
+- **OpenSSL 3**: `brew install openssl@3` (found automatically on Apple Silicon and Intel; set `OPENSSL_ROOT` for another location)
 - An **Apple Developer Account** (for signing Network Extensions)
 
 ### One-Step Build & Install
@@ -247,13 +257,15 @@ The core wire-format protocol engine and crypto components include an extensive 
 swift test
 ```
 
-Executes 38 unit tests covering:
-- TLS-Auth and TLS-Crypt-V2 wrapping/unwrapping
-- AEAD-Epoch key derivation and packet round-trips
+Executes 71 unit tests covering:
+- tls-auth known-answer vectors captured from a real OpenVPN server, tls-crypt and tls-crypt-v2, dynamic tls-crypt keys
+- AEAD-epoch key derivation, packet round-trips and epoch rotation
 - OpenVPN PRF and RFC 5705 EKM vector verification
 - Sliding-window replay filter state transitions
 - TCP packet framing, buffering, and fragmentation
-- `PUSH_REPLY` directive and options parsing
+- Profile parsing (protocols, remotes, quoting, file inlining, unsupported features) and `PUSH_REPLY`/control-message parsing
+
+End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 49 scenarios, and `Scripts/proxy-tests.sh` tests the browser proxy and its control API (10 checks) against an isolated SemiProxy instance.
 
 ---
 
@@ -266,22 +278,25 @@ Executes 38 unit tests covering:
 │   ├── ChromeExtensionInstaller.swift # Extension staging and sync manager
 │   └── LocalProxyServer.swift# HTTP CONNECT loopback proxy core
 ├── ChromeExtension/          # Chrome Manifest V3 companion extension
-├── Development/              # Local development configurations and scratch files
 ├── Package.swift             # Swift Package Manager manifest for core libraries
 ├── project.yml               # XcodeGen project definition specification
 ├── ProxyHelper/              # Embedded SemiProxy background accessory agent
 │   └── main.swift            # LaunchServices runner and watchdog lifecycle
-├── Scripts/                  # Development, signing, and installation scripts
-│   └── build-dev.sh          # Automated build, sign, verify & install pipeline
+├── Scripts/                  # Development, signing, test and installation scripts
+│   ├── build-dev.sh          # Automated build, sign, verify & install pipeline
+│   ├── integration-tests.sh  # ovpn-cli against a real OpenVPN server
+│   ├── proxy-tests.sh        # SemiProxy and its control API in isolation
+│   └── openssl-*.sh          # Locate, stage and bundle OpenSSL for Xcode
 ├── Shared/                   # Shared configurations and data models
-│   └── SharedConfig.swift    # Routing modes, domain models, and IPC constants
+│   ├── SharedConfig.swift    # Routing modes, domain models, and IPC constants
+│   └── TunnelSecrets.swift   # Keychain hand-off of profiles and credentials
 ├── Sources/
 │   ├── COpenVPNTLS/          # C OpenSSL 3 shim (memory BIOs, TLS session exporter)
 │   ├── OpenVPNCore/          # Pure Swift OpenVPN 2.6/2.7 protocol implementation
 │   └── OpenVPNCLI/           # Headless ovpn-cli profile test executable
 ├── Tests/
 │   └── OpenVPNCoreTests/     # Unit tests for protocol wire formats, crypto, and framing
-└── TunnelProvider/           # NEPacketTunnelProvider macOS system extension
+└── TunnelProvider/           # NEPacketTunnelProvider app extension
 ```
 
 ---
@@ -292,26 +307,28 @@ SemiVPN has been validated byte-for-byte against:
 - **Commercial VPN Providers**: Verified with TLS 1.3 / AES-128-GCM / tls-crypt-v2, full AEAD-epoch data channel, and bidirectional live keepalive round-trips.
 - **OpenVPN 2.7.x Servers**: Tested against OpenVPN 2.7.6 with tls-crypt-v2 and AEAD-epoch negotiation.
 - **OpenVPN 2.6.x Servers**: Tested against OpenVPN 2.6.x with tls-auth (SHA-512) and AES-256-CBC, verified byte-for-byte against the server's logged epoch keys.
+- **OpenVPN 2.7.7 (automated)**: `Scripts/integration-tests.sh` covers UDP/TCP, tls-auth (SHA1/SHA256/SHA512, all key directions), tls-crypt, tls-crypt-v2, credentials, AUTH_FAILED/AUTH_PENDING/auth-token, server RESTART/HALT/EXIT, push continuation, certificate chains, encrypted keys, `verify-x509-name`, and in-band renegotiation.
 
 ---
 
 ## Known Limitations
 
 - **Per-App VPN Deployment**: macOS enforces MDM/configuration-profile requirements for production deployment of `NEAppRule`. Development builds use Apple's `NETestAppMapping` mechanism.
-- **Session Renegotiation**: Server soft-resets and `reneg-sec` triggers are handled via seamless session re-establishment rather than in-band rekeying. Session packet counters are proactively refreshed before counter overflow.
-- **IPv6 Dual-Stack & Leak Protection**: SemiVPN supports dual-stack IPv6 tunneling when configured on the OpenVPN server (parsing `ifconfig-ipv6`, `route-ipv6`, `redirect-gateway ipv6`, and IPv6 DNS). When connected to an IPv4-only VPN on a dual-stack network, SemiVPN automatically activates IPv6 Leak Protection by capturing all IPv6 traffic in the scoped tunnel and synthesizing ICMPv6 Destination Unreachable responses, causing Happy Eyeballs (RFC 8305) to immediately route all traffic through the VPN's IPv4 tunnel without leaking to the local ISP.
+- **IPv6 Dual-Stack & Leak Protection**: SemiVPN supports dual-stack IPv6 tunneling when configured on the OpenVPN server (parsing `ifconfig-ipv6`, `route-ipv6`, `redirect-gateway ipv6`, and IPv6 DNS). When connected to an IPv4-only VPN on a dual-stack network, SemiVPN automatically activates IPv6 Leak Protection by capturing all IPv6 traffic in the tunnel and synthesizing ICMPv6 Destination Unreachable responses, causing Happy Eyeballs (RFC 8305) to immediately route all traffic through the VPN's IPv4 tunnel without leaking to the local ISP.
 - **UDP / QUIC in Browser Routing**: The browser proxy handles TCP HTTP and HTTPS CONNECT traffic. UDP-based protocols (QUIC/HTTP3 and WebRTC) should be disabled in Chrome if strict privacy isolation is required.
-- **TAP Devices**: Routed IP (`dev tun`) mode is supported; bridged ethernet (`dev tap`) is unsupported.
+- **Browser Proxy Lifetime**: SemiProxy runs while the SemiVPN app runs (it is a menu-bar app and can start at login). If the app is quit, Chrome falls back to DIRECT for listed domains unless the fail-closed option is enabled.
+- **Unsupported Profile Features**: bridged `dev tap`, static-key (`secret`) mode, `pkcs12`/PKCS#11/`cryptoapicert` keys, `http-proxy`/`socks-proxy`, `fragment`, compression (only stubs are announced), `PUSH_UPDATE` and `crl-verify`. Importing a profile reports these.
 
 ---
 
 ## Distribution & Signing
 
-To distribute SemiVPN outside a development environment:
-1. Sign both the host application and `TunnelProvider.appex` with a valid Apple Developer ID Application certificate.
-2. Enable the Hardened Runtime (`ENABLE_HARDENED_RUNTIME=YES`).
-3. Submit the build for Apple Notarization via `xcrun notarytool submit`.
-4. Pre-approve system extensions via MDM (`NEProviderSystemExtensionPolicy` payload) or prompt the user for local system extension approval.
+`TunnelProvider` is packaged as a Network Extension **app extension** (`.appex`). macOS only accepts app-extension NE providers for development builds and Mac App Store distribution:
+
+- **Mac App Store**: sign with App Store distribution profiles that include the `packet-tunnel-provider` entitlement and the shared keychain group, then submit through App Store Connect.
+- **Developer ID (outside the App Store)**: Apple requires Network Extension providers to be packaged as a **System Extension** (`packet-tunnel-provider-systemextension`, activated with `OSSystemExtensionRequest`). That packaging is not implemented yet; the existing provider code can be reused, but the target type, entitlements and activation flow have to change before a notarized Developer ID build will work.
+
+All targets build with the Hardened Runtime, which notarization requires.
 
 ---
 

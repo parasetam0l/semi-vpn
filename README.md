@@ -168,9 +168,26 @@ swift run -c release ovpn-cli "path/to/profile.ovpn" [options]
 
 | Option | Description |
 | :--- | :--- |
-| `--timeout <seconds>` | Connection timeout in seconds (default: 30) |
-| `--no-ekm` | Force classic PRF key derivation even if the server supports EKM |
+| `--timeout <seconds>` | Give up if the tunnel is not ready in time (default: 60) |
+| `--hold <seconds>` | Stay connected this long after the tunnel is ready, then disconnect (default: exit as soon as it is ready) |
 | `--auth-user-pass <user> <pass>` | Provide username and password directly via the CLI |
+| `--auth-file <path>` | Read the username (line 1) and password (line 2) from a file |
+| `--no-ekm` | Force classic PRF key derivation even if the server supports EKM |
+| `--verbose` | Log control-channel message contents |
+| `--trace` / `--dump <path>` | Print every wire packet / append full hex dumps to a file |
+
+Exit status: `0` ready (or held successfully), `1` failed, `2` usage error, `3` timeout.
+
+### Integration Tests
+
+`Scripts/integration-tests.sh` runs `ovpn-cli` against a real OpenVPN server
+(`brew install openvpn`). The server runs unprivileged on loopback with
+`dev null`, and a throwaway PKI is generated for every run:
+
+```sh
+Scripts/integration-tests.sh            # all scenarios
+Scripts/integration-tests.sh tls-auth   # scenarios whose name contains "tls-auth"
+```
 
 ---
 

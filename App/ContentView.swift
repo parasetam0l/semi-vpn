@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var pendingDomainToAdd: String?
     @State private var showDomainSubdomainPrompt = false
     @State private var discoveredProfiles: [URL] = []
+    @State private var discoveredMeta: [URL: (name: String, host: String)] = [:]
     @State private var showScanDialog = false
     @State private var scanDesktop = true
     @State private var scanDocuments = true
@@ -36,7 +37,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showProfileMenu = false
     @State private var extensiveLogging = AppLogger.enabled
-    @State private var launchAtLogin = true
+    @State private var launchAtLogin = false
     @State private var launchAtLoginError: String?
     @State private var chromeExtensionReady = false
     @State private var chromeExtensionError: String?
@@ -1420,9 +1421,8 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(discoveredProfiles, id: \.self) { url in
-                            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-                            let name = importName(for: url, text: text)
-                            let host = (try? OVPNParser().parse(text))?.remotes.first?.host ?? "unknown"
+                            let name = discoveredMeta[url]?.name ?? url.deletingPathExtension().lastPathComponent
+                            let host = discoveredMeta[url]?.host ?? "unknown"
                             Toggle(isOn: Binding(
                                 get: { selectedScanProfiles.contains(url) },
                                 set: { on in
@@ -1739,19 +1739,19 @@ struct ContentView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// Reads a profile's metadata for the picker rows.
+    /// Reads a profile's metadata for the picker rows (cached: views call
+    /// this on every render).
     private func profileMeta(_ name: String) -> ProfileMeta {
         let fallback = name.replacingOccurrences(of: ".ovpn", with: "")
-        guard let text = SharedConfig.loadProfile(name: name) else {
+        guard let entry = ProfileCatalog.shared.entry(for: name) else {
             return ProfileMeta(displayName: fallback, host: "unknown", protocolName: "OpenVPN")
         }
-        let cn = profileName(from: text) ?? fallback
-        guard let profile = try? OVPNParser().parse(text),
-              let remote = profile.remotes.first else {
+        let cn = Self.certificateCommonName(in: entry.text) ?? fallback
+        guard let profile = entry.profile, let remote = profile.remotes.first else {
             return ProfileMeta(displayName: cn, host: "unknown", protocolName: "OpenVPN")
         }
         return ProfileMeta(displayName: cn, host: remote.host,
-                           protocolName: "OpenVPN \(profile.transport.rawValue.uppercased())")
+                           protocolName: "OpenVPN \(profile.transport(for: remote).rawValue.uppercased())")
     }
 
     private func profileEndpointLabel(_ name: String) -> String {
@@ -1763,7 +1763,7 @@ struct ContentView: View {
     /// subject CN (the OpenVPN Connect JSON name is just "host [CN]", both
     /// of which we derive from the profile itself).
     private func importName(for url: URL, text: String) -> String {
-        profileName(from: text) ?? url.deletingPathExtension().lastPathComponent
+        Self.certificateCommonName(in: text) ?? url.deletingPathExtension().lastPathComponent
     }
 
     /// The discovery location of a scanned profile.
@@ -1786,59 +1786,26 @@ struct ContentView: View {
             .lineLimit(1)
     }
 
-    /// Extracts the client certificate's Subject CN — that is the profile
-    /// name. The subject's attributes come after the issuer's in the DER,
-    /// so the last commonName wins.
-    private func profileName(from text: String) -> String? {
-        guard let range = text.range(of: "<cert>") else { return nil }
-        let block = text[range.upperBound...]
-        guard let end = block.range(of: "</cert>") else { return nil }
-        let inner = block[..<end.lowerBound]
-        // Some profiles embed an `openssl x509` text dump before the PEM;
-        // only decode from the BEGIN line onwards.
-        guard let begin = inner.range(of: "-----BEGIN CERTIFICATE-----") else { return nil }
-        let pem = inner[begin.upperBound...]
-        let lines = pem.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("-----") }
-        guard let der = Data(base64Encoded: lines.joined()) else { return nil }
-        let bytes = [UInt8](der)
-        // The commonName attribute OID (2.5.4.3 = 55 04 03) followed by the
-        // value tag (UTF8String 0x0C or PrintableString 0x13) and its
-        // length (short or long form).
-        // The subject's commonName is the SECOND occurrence in the DER:
-        // the order is [issuer CN][subject CN][authority-key-id CN].
-        var found: [String] = []
-        var i = 0
-        while i < bytes.count - 3 {
-            if bytes[i] == 0x55 && bytes[i + 1] == 0x04 && bytes[i + 2] == 0x03 {
-                let j = i + 3
-                if j + 1 < bytes.count, bytes[j] == 0x0C || bytes[j] == 0x13 {
-                    var len = 0
-                    var k = j + 1
-                    if bytes[k] & 0x80 == 0 {
-                        len = Int(bytes[k])
-                        k += 1
-                    } else {
-                        let count = Int(bytes[k] & 0x7F)
-                        k += 1
-                        guard count <= 4, k + count <= bytes.count else { i += 1; continue }
-                        for _ in 0..<count {
-                            len = (len << 8) | Int(bytes[k])
-                            k += 1
-                        }
-                    }
-                    guard len > 0, k + len <= bytes.count else { i += 1; continue }
-                    if let cn = String(bytes: bytes[k..<(k + len)], encoding: .utf8),
-                       !cn.trimmingCharacters(in: .whitespaces).isEmpty {
-                        found.append(cn)
-                    }
-                }
-            }
-            i += 1
-        }
-        if found.count >= 2 { return found[1] }
-        return found.last
+    /// The client certificate's subject common name — the profile's
+    /// identity. Uses the first certificate of the <cert> block (later ones
+    /// are its chain).
+    static func certificateCommonName(in text: String) -> String? {
+        guard let start = text.range(of: "<cert>"),
+              let end = text.range(of: "</cert>", range: start.upperBound..<text.endIndex) else { return nil }
+        let block = text[start.upperBound..<end.lowerBound]
+        // Some profiles embed an `openssl x509` text dump before the PEM.
+        guard let begin = block.range(of: "-----BEGIN CERTIFICATE-----"),
+              let finish = block.range(of: "-----END CERTIFICATE-----", range: begin.upperBound..<block.endIndex) else { return nil }
+        let base64 = block[begin.upperBound..<finish.lowerBound]
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+        guard let der = Data(base64Encoded: base64),
+              let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return nil }
+        var commonName: CFString?
+        guard SecCertificateCopyCommonName(certificate, &commonName) == errSecSuccess,
+              let name = commonName as String?,
+              !name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return name
     }
 
     private struct ProfileMeta {
@@ -2130,7 +2097,7 @@ struct ContentView: View {
         .frame(width: 420)
         .onAppear {
             refreshStatuses()
-            launchAtLogin = (NSApp.delegate as? AppDelegate)?.launchAtLoginEnabled ?? true
+            launchAtLogin = (NSApp.delegate as? AppDelegate)?.launchAtLoginEnabled ?? false
             launchAtLoginError = nil
         }
     }
@@ -2410,19 +2377,34 @@ struct ContentView: View {
         showScanResults = true
         scanning = true
         selectedScanProfiles = []
-        Task {
+        var sources: [ScanSource] = []
+        if scanDesktop { sources.append(.desktop) }
+        if scanDocuments { sources.append(.documents) }
+        if scanDownloads { sources.append(.downloads) }
+        if openVPNClientInstalled && scanOpenVPN { sources.append(.openVPN) }
+        // Directory listing and parsing happen off the main thread.
+        Task.detached(priority: .userInitiated) {
             var found: [URL] = []
-            if scanDesktop { found.append(contentsOf: scan(.desktop)) }
-            if scanDocuments { found.append(contentsOf: scan(.documents)) }
-            if scanDownloads { found.append(contentsOf: scan(.downloads)) }
-            if openVPNClientInstalled && scanOpenVPN { found.append(contentsOf: scan(.openVPN)) }
-            discoveredProfiles = found
-            selectedScanProfiles = Set(found)
-            scanning = false
+            var meta: [URL: (name: String, host: String)] = [:]
+            for source in sources {
+                for url in Self.scan(source) where !found.contains(url) {
+                    found.append(url)
+                    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                    let name = Self.certificateCommonName(in: text) ?? url.deletingPathExtension().lastPathComponent
+                    let host = (try? OVPNParser().parse(text))?.remotes.first?.host ?? "unknown"
+                    meta[url] = (name, host)
+                }
+            }
+            await MainActor.run {
+                discoveredProfiles = found
+                discoveredMeta = meta
+                selectedScanProfiles = Set(found)
+                scanning = false
+            }
         }
     }
 
-    private func scan(_ source: ScanSource) -> [URL] {
+    private static func scan(_ source: ScanSource) -> [URL] {
         var found: [URL] = []
         let fm = FileManager.default
         let dir: String
@@ -2459,26 +2441,36 @@ struct ContentView: View {
     private func importProfile(from url: URL, askName: Bool = true) {
         AppLogger.log("importing profile: \(url.lastPathComponent)")
         let text: String
+        let parsed: OVPNProfile
         do {
-            text = try String(contentsOf: url, encoding: .utf8)
-            _ = try OVPNParser().parse(text)  // validate
+            // Embed referenced files (ca ca.crt, tls-auth ta.key 1, ...) so
+            // the stored profile is self-contained.
+            let original = try String(contentsOf: url, encoding: .utf8)
+            text = try OVPNProfileInliner.inline(original, baseDirectory: url.deletingLastPathComponent())
+            parsed = try OVPNParser().parse(text)
         } catch {
             importError = "Invalid profile: \(error.localizedDescription)"
             showImportError = true
             return
         }
+        if !parsed.fatalIssues.isEmpty {
+            importError = "\(url.lastPathComponent) cannot be used:\n" +
+                parsed.fatalIssues.map { "• \($0.message)" }.joined(separator: "\n")
+            showImportError = true
+            return
+        }
+        let warnings = parsed.issues.filter { $0.severity == .warning }.map(\.message)
 
         var name = importName(for: url, text: text)
         if askName {
             // Confirmation with the profile's identity — the name comes
             // from the certificate CN automatically.
-            let profile = try? OVPNParser().parse(text)
-            let host = profile?.remotes.first?.host ?? "unknown"
-            let protocolName = profile.map { "OpenVPN \($0.transport.rawValue.uppercased())" } ?? "OpenVPN"
+            let host = parsed.remotes.first?.host ?? "unknown"
+            let protocolName = "OpenVPN \(parsed.transport.rawValue.uppercased())"
 
             let alert = NSAlert()
             alert.messageText = "Add this profile?"
-            alert.informativeText = url.lastPathComponent
+            alert.informativeText = ([url.lastPathComponent] + warnings.map { "⚠︎ \($0)" }).joined(separator: "\n")
 
             let stack = NSStackView()
             stack.orientation = .vertical
@@ -2502,6 +2494,7 @@ struct ContentView: View {
             name += "-\(Int(Date().timeIntervalSince1970))"
         }
         if SharedConfig.saveProfile(text, name: name + ".ovpn") {
+            ProfileCatalog.shared.invalidate()
             profiles = SharedConfig.profileNames()
             selectedProfile = name + ".ovpn"
         } else {
@@ -2563,6 +2556,7 @@ struct ContentView: View {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         SharedConfig.deleteProfile(name: name)
+        ProfileCatalog.shared.invalidate()
         if selectedProfile == name {
             selectedProfile = nil
             selectedApps = []
@@ -2609,7 +2603,7 @@ struct ContentView: View {
 
     /// Whether the given extension is registered (and therefore approved)
     /// with the system's plugin manager.
-    private func extensionRegistered(bundleID: String) -> Bool {
+    private static func extensionRegistered(bundleID: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
         process.arguments = ["-m", "-i", bundleID]
@@ -2618,16 +2612,20 @@ struct ContentView: View {
         process.standardError = pipe
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return false
         }
+        // Read before waiting: a full pipe would otherwise block pluginkit.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         return String(data: data, encoding: .utf8)?.contains(bundleID) ?? false
     }
 
     private func refreshStatuses() {
-        tunnelRegistered = extensionRegistered(bundleID: "com.semivpn.app.TunnelProvider")
+        Task.detached(priority: .utility) {
+            let registered = Self.extensionRegistered(bundleID: "com.semivpn.app.TunnelProvider")
+            await MainActor.run { tunnelRegistered = registered }
+        }
         Task {
             let managers = try? await NETunnelProviderManager.loadAllFromPreferences()
             vpnConfigSaved = managers?.contains(where: {
@@ -2644,8 +2642,7 @@ struct ContentView: View {
 
     /// The credentials a profile can store, or nil when it needs none.
     private func credentialEditorRequest(for name: String) -> VPNManager.CredentialRequest? {
-        guard let text = SharedConfig.loadProfile(name: name),
-              let profile = try? OVPNParser().parse(text) else { return nil }
+        guard let profile = ProfileCatalog.shared.entry(for: name)?.profile else { return nil }
         let needsUserPass = profile.requiresAuthUserPass && profile.authUserPass?.password == nil
         guard needsUserPass || profile.requiresKeyPassphrase else { return nil }
         return VPNManager.CredentialRequest(
@@ -2784,5 +2781,35 @@ private struct BrandMark: View {
     private var bundledBrandImage: NSImage? {
         guard let url = Bundle.main.url(forResource: "AppIcon-v2", withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
+    }
+}
+
+/// Profiles parsed for display, cached so views do not hit the keychain
+/// and the parser on every render. Invalidated on import and delete.
+private final class ProfileCatalog {
+    static let shared = ProfileCatalog()
+
+    struct Entry {
+        let text: String
+        let profile: OVPNProfile?
+    }
+
+    private var entries: [String: Entry] = [:]
+    private let lock = NSLock()
+
+    func entry(for name: String) -> Entry? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = entries[name] { return cached }
+        guard let text = SharedConfig.loadProfile(name: name) else { return nil }
+        let entry = Entry(text: text, profile: try? OVPNParser().parse(text))
+        entries[name] = entry
+        return entry
+    }
+
+    func invalidate() {
+        lock.lock()
+        entries.removeAll()
+        lock.unlock()
     }
 }

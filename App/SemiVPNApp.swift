@@ -18,8 +18,6 @@ struct SemiVPNApp: App {
                     .environmentObject(vpnManager)
                 .frame(width: 1020, height: 720)
                 .onAppear {
-                    let url = URL(fileURLWithPath: "/tmp/semivpn-diag.log")
-                    try? "scene onAppear pid=\(ProcessInfo.processInfo.processIdentifier)\n".write(to: url, atomically: true, encoding: .utf8)
                     NSApp.activate(ignoringOtherApps: true)
                     appDelegate.attach(vpnManager: vpnManager)
                     handleLaunchArguments()
@@ -124,8 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         dismissStatusMenu()
     }
 
+    /// Opt-in: the app no longer registers itself as a login item on first
+    /// launch; an earlier explicit choice is kept.
     var launchAtLoginEnabled: Bool {
-        UserDefaults.standard.object(forKey: Self.launchAtLoginPreferenceKey) as? Bool ?? true
+        UserDefaults.standard.object(forKey: Self.launchAtLoginPreferenceKey) as? Bool ?? false
     }
 
     var launchAtLoginStatusDescription: String {
@@ -161,10 +161,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     private func synchronizeLaunchAtLogin() {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.launchAtLoginPreferenceKey) == nil {
-            defaults.set(true, forKey: Self.launchAtLoginPreferenceKey)
-        }
         guard launchAtLoginEnabled, SMAppService.mainApp.status != .enabled else { return }
         _ = setLaunchAtLogin(true)
     }

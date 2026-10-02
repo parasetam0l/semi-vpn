@@ -8,6 +8,8 @@ public enum DataChannelError: Error, Sendable, Equatable {
     case decryptionFailed
     case unsupportedCipher
     case replayedPacket
+    /// The 32-bit packet-id space is used up; the keys must be renegotiated.
+    case packetIDExhausted
 }
 
 /// Directional data-channel keys, derived from the key-expansion PRF output
@@ -42,19 +44,60 @@ public struct DataChannelKeySet: Sendable, Equatable {
 /// and the 12-byte implicit IV, derived per direction via
 /// `OVPN-Expand-Label`. The nonce XORs the implicit IV with the 8-byte
 /// epoch packet-id; AAD covers the 4-byte header plus the packet-id.
+///
+/// Epochs advance independently per direction: `E(n+1) =
+/// OVPN-Expand-Label(E(n), "datakey upd", "", 32)`. The secrets are kept so
+/// the keys can follow the peer (nil disables iteration, e.g. in tests).
 public struct DataChannelEpochKeySet: Sendable, Equatable {
     public var cipher: OVPNProfile.Cipher
     public var sendKey: Data
     public var sendIV: Data
     public var recvKey: Data
     public var recvIV: Data
+    public var sendEpoch: UInt16
+    public var recvEpoch: UInt16
+    /// The epoch secrets of the current send/receive epochs.
+    public var sendSecret: Data?
+    public var recvSecret: Data?
 
-    public init(cipher: OVPNProfile.Cipher, sendKey: Data, sendIV: Data, recvKey: Data, recvIV: Data) {
+    public init(cipher: OVPNProfile.Cipher, sendKey: Data, sendIV: Data, recvKey: Data, recvIV: Data,
+                sendSecret: Data? = nil, recvSecret: Data? = nil) {
         self.cipher = cipher
         self.sendKey = sendKey
         self.sendIV = sendIV
         self.recvKey = recvKey
         self.recvIV = recvIV
+        self.sendEpoch = 1
+        self.recvEpoch = 1
+        self.sendSecret = sendSecret
+        self.recvSecret = recvSecret
+    }
+
+    /// Moves the send direction to `epoch` (> current). Returns false when
+    /// the secret is unknown.
+    mutating func iterateSend(to epoch: UInt16) -> Bool {
+        guard var secret = sendSecret, epoch > sendEpoch else { return false }
+        for _ in sendEpoch..<epoch {
+            guard let next = KeyExpansion.nextEpochSecret(secret) else { return false }
+            secret = next
+        }
+        guard let (key, iv) = KeyExpansion.epochDataKey(secret: secret, cipher: cipher) else { return false }
+        sendSecret = secret
+        sendKey = key
+        sendIV = iv
+        sendEpoch = epoch
+        return true
+    }
+
+    /// Derives the receive key of a future epoch without changing state.
+    func futureReceiveKey(epoch: UInt16) -> (key: Data, iv: Data, secret: Data)? {
+        guard var secret = recvSecret, epoch > recvEpoch else { return nil }
+        for _ in recvEpoch..<epoch {
+            guard let next = KeyExpansion.nextEpochSecret(secret) else { return nil }
+            secret = next
+        }
+        guard let (key, iv) = KeyExpansion.epochDataKey(secret: secret, cipher: cipher) else { return nil }
+        return (key, iv, secret)
     }
 }
 
@@ -89,6 +132,34 @@ public struct DataChannelCrypto: Sendable {
     /// for the rest of the session (both directions).
     public var classicAADIncludesHeader = true
 
+    /// The last packet-id sent through `encryptNext` (per epoch in the
+    /// epoch format).
+    public private(set) var sendPacketID: UInt64 = 0
+    /// Set when these keys must be replaced by a renegotiation: the classic
+    /// packet-id nears its 32-bit limit, the AEAD usage limit is reached, or
+    /// the epoch counter nears its 16-bit limit.
+    public private(set) var needsRenegotiation = false
+    /// Plaintext blocks (16 bytes) protected per direction, for the AEAD
+    /// usage limit (OpenVPN `aead_usage_limit_reached`).
+    private var sendBlocks: UInt64 = 0
+    private var recvBlocks: UInt64 = 0
+    private var highestRecvPacketID: UInt64 = 0
+    /// The previous receive epoch's key and replay state, kept for packets
+    /// still in flight after the peer moved to a new epoch.
+    private var retiringEpoch: (epoch: UInt16, key: Data, iv: Data)?
+    private var retiringReplay: ReplayWindow?
+
+    /// q + s <= 2^36 - 1 for AES-GCM (OpenVPN `cipher_get_aead_limits`);
+    /// ChaCha20-Poly1305 and CBC have no usage limit.
+    public var usageLimit: UInt64
+    static let aesGCMUsageLimit: UInt64 = (1 << 36) - 1
+    /// OpenVPN renegotiates classic keys once the packet-id reaches this.
+    static let packetIDWrapTrigger: UInt64 = 0xFF00_0000
+    /// Largest per-epoch packet counter (48 bits).
+    static let epochPacketIDMax: UInt64 = 0x0000_FFFF_FFFF_FFFF
+    /// Epoch keys accepted ahead of the current receive epoch.
+    static let futureEpochCount: UInt16 = 4
+
     public init(
         keys: DataChannelKeySet,
         epochKeys: DataChannelEpochKeySet? = nil,
@@ -97,6 +168,10 @@ public struct DataChannelCrypto: Sendable {
         self.keys = keys
         self.epochKeys = epochKeys
         self.replay = replay
+        switch keys.cipher {
+        case .aes128GCM, .aes256GCM: usageLimit = Self.aesGCMUsageLimit
+        default: usageLimit = 0
+        }
     }
 
     public var hmacLength: Int {
@@ -110,6 +185,55 @@ public struct DataChannelCrypto: Sendable {
     }
 
     // MARK: - Encrypt (produces the full on-wire data packet)
+
+    /// Encrypts with the next packet-id, advancing the epoch when its
+    /// counter or usage limit is reached, and flags `needsRenegotiation`
+    /// when the keys themselves must be replaced.
+    public mutating func encryptNext(
+        plaintext: Data,
+        peerID: UInt32,
+        keyID: UInt8,
+        useV1Header: Bool = false
+    ) throws -> Data {
+        if usesEpoch {
+            if sendPacketID >= Self.epochPacketIDMax
+                || (usageLimit > 0 && sendBlocks + sendPacketID > usageLimit) {
+                iterateSendEpoch()
+            }
+        } else if sendPacketID >= UInt64(UInt32.max) {
+            // Wrapping the 32-bit packet-id would reuse AEAD nonces.
+            throw DataChannelError.packetIDExhausted
+        }
+        sendPacketID += 1
+        sendBlocks += UInt64((plaintext.count + 15) / 16)
+        let packet = try encrypt(plaintext: plaintext, packetID: sendPacketID, peerID: peerID,
+                                 keyID: keyID, useV1Header: useV1Header)
+        updateRenegotiationNeed()
+        return packet
+    }
+
+    /// Test hook: jump the send counter (e.g. close to its limits).
+    mutating func setSendPacketIDForTesting(_ value: UInt64) {
+        sendPacketID = value
+    }
+
+    /// Moves the send direction to the next epoch (fresh key, counter 1).
+    mutating func iterateSendEpoch() {
+        guard var epochKeys, epochKeys.sendEpoch < UInt16.max,
+              epochKeys.iterateSend(to: epochKeys.sendEpoch + 1) else { return }
+        self.epochKeys = epochKeys
+        sendPacketID = 0
+        sendBlocks = 0
+    }
+
+    private mutating func updateRenegotiationNeed() {
+        if let epochKeys, usesEpoch {
+            if epochKeys.sendEpoch >= 0xF000 { needsRenegotiation = true }
+        } else if sendPacketID >= Self.packetIDWrapTrigger
+                    || (usageLimit > 0 && sendBlocks + sendPacketID > usageLimit) {
+            needsRenegotiation = true
+        }
+    }
 
     /// - Parameter packetID: the monotonically increasing send counter. In
     ///   epoch format the low 48 bits go on the wire; otherwise it must fit
@@ -179,7 +303,7 @@ public struct DataChannelCrypto: Sendable {
     /// Epoch format: 8-byte packet-id (16-bit epoch + 48-bit counter),
     /// nonce = implicit IV XOR [pid(8) || zeros(4)], AAD = header + pid.
     private func encryptEpoch(plaintext: Data, packetID: UInt64, header: Data, epochKeys: DataChannelEpochKeySet) throws -> Data {
-        let pid = Self.epochPacketID(epoch: 1, counter: packetID)
+        let pid = Self.epochPacketID(epoch: epochKeys.sendEpoch, counter: packetID)
         let nonce = try Self.epochNonce(packetID: pid, implicitIV: epochKeys.sendIV)
         let aad = header + pid
         let sealed = try aesGCMSeal(plaintext: plaintext, nonce: nonce, key: epochKeys.sendKey, aad: aad)
@@ -246,18 +370,77 @@ public struct DataChannelCrypto: Sendable {
         guard body.count >= 8 + 16 else { throw DataChannelError.badPacket }
         let pid = body.prefix(8)
         // Epoch format: ciphertext first, tag at the end.
-        let ciphertext = body.dropFirst(8).dropLast(16)
-        let tag = body.suffix(16)
-
-        let nonce = try Self.epochNonce(packetID: Data(pid), implicitIV: epochKeys.recvIV)
+        let ciphertext = Data(body.dropFirst(8).dropLast(16))
+        let tag = Data(body.suffix(16))
+        let pidValue = pid.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        let epoch = UInt16(truncatingIfNeeded: pidValue >> 48)
+        let counter = pidValue & 0x0000_FFFF_FFFF_FFFF
         let aad = header + pid
-        guard let opened = try aesGCMOpen(ciphertext: Data(ciphertext), tag: Data(tag), nonce: nonce, key: epochKeys.recvKey, aad: aad) else {
+
+        func open(key: Data, iv: Data) throws -> Data? {
+            let nonce = try Self.epochNonce(packetID: Data(pid), implicitIV: iv)
+            return try aesGCMOpen(ciphertext: ciphertext, tag: tag, nonce: nonce, key: key, aad: aad)
+        }
+
+        if epoch == epochKeys.recvEpoch {
+            guard let opened = try open(key: epochKeys.recvKey, iv: epochKeys.recvIV) else {
+                throw DataChannelError.decryptionFailed
+            }
+            try acceptReplay(counter)
+            noteReceived(counter: counter, bytes: opened.count)
+            return opened
+        }
+        if let retiring = retiringEpoch, epoch == retiring.epoch {
+            guard let opened = try open(key: retiring.key, iv: retiring.iv) else {
+                throw DataChannelError.decryptionFailed
+            }
+            if var filter = retiringReplay {
+                guard filter.accept(counter) else { throw DataChannelError.replayedPacket }
+                retiringReplay = filter
+            }
+            return opened
+        }
+        // The peer moved to a newer epoch (within the future-key window).
+        guard epoch > epochKeys.recvEpoch,
+              epoch <= epochKeys.recvEpoch &+ Self.futureEpochCount,
+              epoch < UInt16.max - Self.futureEpochCount,
+              let future = epochKeys.futureReceiveKey(epoch: epoch),
+              let opened = try open(key: future.key, iv: future.iv) else {
             throw DataChannelError.decryptionFailed
         }
-        // The low 48 bits of the epoch packet-id are the counter.
-        let pidValue = pid.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-        try acceptReplay(pidValue & 0x0000_FFFF_FFFF_FFFF)
+        // Authenticated: retire the old receive key and adopt the new one.
+        var updated = epochKeys
+        retiringEpoch = (updated.recvEpoch, updated.recvKey, updated.recvIV)
+        retiringReplay = replay
+        updated.recvEpoch = epoch
+        updated.recvKey = future.key
+        updated.recvIV = future.iv
+        updated.recvSecret = future.secret
+        // Like OpenVPN, never send on an older epoch than the peer uses.
+        if updated.sendEpoch < epoch, updated.iterateSend(to: epoch) {
+            sendPacketID = 0
+            sendBlocks = 0
+        }
+        self.epochKeys = updated
+        if let window = replay?.windowSize {
+            replay = ReplayWindow(windowSize: window)
+        }
+        recvBlocks = 0
+        highestRecvPacketID = 0
+        try acceptReplay(counter)
+        noteReceived(counter: counter, bytes: opened.count)
         return opened
+    }
+
+    /// Tracks the receive-direction usage; at the limit, advancing our own
+    /// send epoch nudges the peer to a new key (OpenVPN behaviour).
+    private mutating func noteReceived(counter: UInt64, bytes: Int) {
+        recvBlocks += UInt64((bytes + 15) / 16)
+        highestRecvPacketID = max(highestRecvPacketID, counter)
+        if usageLimit > 0, recvBlocks + highestRecvPacketID > usageLimit,
+           let epochKeys, epochKeys.sendEpoch == epochKeys.recvEpoch {
+            iterateSendEpoch()
+        }
     }
 
     private mutating func decryptCBC(body: Data) throws -> Data {

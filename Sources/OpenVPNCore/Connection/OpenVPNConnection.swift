@@ -165,22 +165,24 @@ public final class OpenVPNConnection: @unchecked Sendable {
     private var tcpOutbound = Data()            // packets awaiting a full socket write
     private var tcpWriteSource: DispatchSourceWrite?
 
-    private var control: ControlChannel?
-    private var clientMaterial: KeyMethod2.ClientMaterial?
-    private var serverMaterial: KeyMethod2.ServerMaterial?
-    /// Key material from both derivations; the PUSH_REPLY decides which
-    /// one the server uses (`key-derivation tls-ekm` vs classic PRF), the
-    /// same way OpenVPN imports pushed options before generating keys.
-    private var prfMaterial: Data?
-    private var ekmMaterial: Data?
-    private var dataCrypto: DataChannelCrypto?
-    private var sendCounter: UInt64 = 0
+    /// Session-level control-channel protection, shared by all key states.
+    private var wrapper: ControlWrapper?
+    private var localSessionID = Data()
+    /// The key in use: key-id 0 for a new session, then the latest
+    /// renegotiated key.
+    private var primary: KeyState?
+    /// A renegotiation in progress (soft reset on the next key-id).
+    private var pending: KeyState?
+    /// The previous key, still accepted for incoming data until it expires
+    /// (OpenVPN's lame duck / transition window).
+    private var lameDuck: KeyState?
+    private var lameDuckExpiry: TimeInterval = 0
+    private var nextKeyID: UInt8 = 1
     /// The peer's data format: servers that announce no DATA_V2 support use
     /// P_DATA_V1; we mirror whatever the peer sends.
     private var peerDataV1 = false
     /// Logged once per session when the first authentic data packet arrives.
     private var dataChannelVerified = false
-    private var sentKeyMaterial = false
     /// Last time an authenticated packet arrived (drives ping-restart).
     private var lastReceiveTime: TimeInterval = 0
     /// Last time a data packet (including pings) was sent.
@@ -207,10 +209,6 @@ public final class OpenVPNConnection: @unchecked Sendable {
     private var authTokenUser: String?
     private var usingAuthToken = false
 
-    // Session lifetime: the server's reneg-sec, plus a proactive refresh
-    // before the 32-bit data packet-id space is exhausted.
-    private var sessionDeadline: TimeInterval?
-
     // Reconnect loop with exponential backoff and remote failover; runs
     // until disconnect().
     private var wantsConnection = false
@@ -233,12 +231,13 @@ public final class OpenVPNConnection: @unchecked Sendable {
     /// Logs control-message contents when enabled (off in production).
     public var verboseLogging = false
 
-    /// Proactive session refresh below the 32-bit packet-id ceiling so the
-    /// GCM nonce space is never approached (epoch format has 2^48 and does
-    /// not need this).
-    static let dataChannelRenewalThreshold: UInt64 = 4_000_000_000
     static let maxPushRequestAttempts = 10
     static let defaultHandWindow: TimeInterval = 60
+    /// OpenVPN's default `reneg-sec`: renegotiate the keys every hour.
+    static let defaultRenegotiationInterval: TimeInterval = 3600
+    /// How long the previous key still decrypts after a renegotiation.
+    static let transitionWindow: TimeInterval = 60
+    static let dynamicTlsCryptLabel = "EXPORTER-OpenVPN-dynamic-tls-crypt"
 
     private var handWindow: TimeInterval {
         profile.handWindow.map(TimeInterval.init) ?? Self.defaultHandWindow
@@ -486,27 +485,23 @@ public final class OpenVPNConnection: @unchecked Sendable {
 
     /// Brings up the TLS control channel once the transport is connected.
     private func startSession() {
-        guard let ca = profile.caPEM else { return }
         // Every transport reconnect is a new TLS/OpenVPN session. In
         // particular, the client key material must be sent again; retaining
-        // this flag would make a post-sleep reconnect wait forever for a
+        // it would make a post-sleep reconnect wait forever for a
         // PUSH_REPLY that can never arrive.
-        sentKeyMaterial = false
-        serverMaterial = nil
-        prfMaterial = nil
-        ekmMaterial = nil
         pushedOptions = nil
         pendingPushOptions = []
-        sessionDeadline = nil
         peerID = 0
         peerDataV1 = false
-        sendCounter = 0
+        dataChannelVerified = false
+        nextKeyID = 1
         lastReceiveTime = Date().timeIntervalSince1970
         lastDataSendTime = 0
         state = .connecting
 
         var tlsAuth: TLSAuth?
         var tlsCrypt: TlsCrypt?
+        var originalKey: Data?
         if let pem = profile.tlsAuthPEM {
             guard let staticKey = try? OpenVPNStaticKey.parse(pem: pem) else {
                 fail(.invalidProfile("the <tls-auth> key is not a valid OpenVPN static key"))
@@ -516,6 +511,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
             // (SHA1 by default); the key slots follow key-direction.
             let keys = staticKey.tlsAuthKeys(direction: profile.keyDirection)
             tlsAuth = TLSAuth(digest: profile.effectiveDigest, sendKey: keys.send, verifyKey: keys.verify)
+            originalKey = staticKey.rawKeyMaterial
         } else if let pem = profile.tlsCryptPEM {
             guard let staticKey = try? OpenVPNStaticKey.parse(pem: pem) else {
                 fail(.invalidProfile("the <tls-crypt> key is not a valid OpenVPN static key"))
@@ -524,6 +520,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
             // tls-crypt (v1): the client encrypts with keys[1] and decrypts
             // with keys[0] (KEY_DIRECTION_INVERSE), like tls-crypt-v2.
             tlsCrypt = TlsCrypt(clientKey: .v1(staticKey: staticKey))
+            originalKey = staticKey.rawKeyMaterial
         } else if let tlsCryptV2 = profile.tlsCryptV2PEM {
             guard let decoded = PEMKeyExtractor.extractKey(from: tlsCryptV2),
                   let clientKey = TlsCrypt.ClientKey.parse(decoded: decoded) else {
@@ -532,8 +529,21 @@ public final class OpenVPNConnection: @unchecked Sendable {
             }
             // tls-crypt-v2: wrap all control packets with the client key.
             tlsCrypt = TlsCrypt(clientKey: clientKey)
+            originalKey = clientKey.kc
         }
+        let wrapper = ControlWrapper(tlsAuth: tlsAuth, tlsCrypt: tlsCrypt, originalKeyMaterial: originalKey)
+        self.wrapper = wrapper
+        localSessionID = KeyMethod2.randomBytes(8)
 
+        guard let key = makeKeyState(keyID: 0, remoteSessionID: nil, softReset: false) else { return }
+        primary = key
+        key.channel.sendReset()
+    }
+
+    /// Creates a key state: a fresh TLS session and reliable channel on
+    /// `keyID`, plus this client's key_method_2 material.
+    private func makeKeyState(keyID: UInt8, remoteSessionID: Data?, softReset: Bool) -> KeyState? {
+        guard let ca = profile.caPEM, let wrapper else { return nil }
         do {
             let tls = try TLSEngine(
                 caPEM: ca,
@@ -545,14 +555,13 @@ public final class OpenVPNConnection: @unchecked Sendable {
                 cipherList: profile.tlsCipher,
                 cipherSuites: profile.tlsCiphersuites
             )
-
-            let sessionID = KeyMethod2.randomBytes(8)
             let channel = ControlChannel(
-                keyID: 0,
-                localSessionID: sessionID,
+                keyID: keyID,
+                localSessionID: localSessionID,
+                remoteSessionID: remoteSessionID,
                 tls: tls,
-                tlsAuth: tlsAuth,
-                tlsCrypt: tlsCrypt,
+                wrapper: wrapper,
+                softReset: softReset,
                 sendWire: { [weak self] packet in
                     self?.sendWire(packet)
                 }
@@ -561,24 +570,28 @@ public final class OpenVPNConnection: @unchecked Sendable {
                 guard let self, self.verboseLogging else { return }
                 self.log(text)
             }
-            control = channel
 
-            // A pushed auth-token replaces the password on later sessions.
+            // A pushed auth-token replaces the password on later sessions
+            // and renegotiations.
             usingAuthToken = authToken != nil
-            let options = OptionsString.build(profile: profile, transport: activeTransport)
-            clientMaterial = KeyMethod2.makeClientMaterial(
-                options: options,
+            var protocolBits = PeerInfo.protocolBits
+            if !preferTLSKeyExport {
+                protocolBits &= ~(1 << 3)   // IV_PROTO_TLS_KEY_EXPORT
+            }
+            let material = KeyMethod2.makeClientMaterial(
+                options: OptionsString.build(profile: profile, transport: activeTransport),
                 username: usingAuthToken ? (authTokenUser ?? profile.authUserPass?.username) : profile.authUserPass?.username,
                 password: usingAuthToken ? authToken : profile.authUserPass?.password,
-                peerInfo: PeerInfo.build(ciphers: profile.announcedCiphers)
+                peerInfo: PeerInfo.build(ciphers: profile.announcedCiphers, protocolBits: protocolBits)
             )
-
-            channel.sendHardReset()
+            return KeyState(keyID: keyID, channel: channel, clientMaterial: material,
+                            started: Date().timeIntervalSince1970)
         } catch let error as TLSEngineError {
             fail(.tlsSetupFailed(error.description))
         } catch {
             fail(.tlsSetupFailed("\(error)"))
         }
+        return nil
     }
 
     private func teardown() {
@@ -594,8 +607,10 @@ public final class OpenVPNConnection: @unchecked Sendable {
         tcpEstablished = false
         tcpFramer = TCPPacketFramer()
         tcpOutbound = Data()
-        control = nil
-        dataCrypto = nil
+        primary = nil
+        pending = nil
+        lameDuck = nil
+        wrapper = nil
     }
 
     // MARK: - Transport
@@ -728,33 +743,50 @@ public final class OpenVPNConnection: @unchecked Sendable {
             return
         }
 
-        guard let channel = control else { return }
-        if opcode == .controlSoftResetV1 {
-            // The server wants to rekey. Only an authentic packet of this
-            // session may trigger a session refresh.
-            guard state == .ready, channel.isAuthentic(packet) else { return }
-            log("server soft reset: refreshing session")
-            reconnect(advance: false, delay: 0)
+        let keyID = first & 0x07
+        let key: KeyState
+        if let pending, pending.keyID == keyID {
+            key = pending
+        } else if let primary, primary.keyID == keyID {
+            guard pending == nil else { return }   // superseded control channel
+            key = primary
+        } else if let lameDuck, lameDuck.keyID == keyID {
+            return   // retired key: data only
+        } else if opcode == .controlSoftResetV1, keyID != 0 {
+            // The server starts a renegotiation on a new key-id. Only an
+            // authentic packet of this session may do that.
+            guard state == .ready, pending == nil, let primary, primary.channel.isAuthentic(packet) else { return }
+            startRenegotiation(keyID: keyID, serverPacket: packet)
+            return
+        } else {
             return
         }
+        receiveControl(packet, on: key)
+    }
 
+    /// Feeds a control packet into a key state's reliable channel and acts
+    /// on what comes out of TLS.
+    private func receiveControl(_ packet: Data, on key: KeyState) {
+        let channel = key.channel
         do {
             let messages = try channel.receive(packet)
             lastReceiveTime = Date().timeIntervalSince1970
             for message in messages {
-                handleControlMessage(message)
-                guard control === channel else { return }   // torn down
+                handleControlMessage(message, on: key)
+                guard isLive(key) else { return }   // torn down or replaced
             }
             // TLS handshake may have completed as a side effect. Before
             // trusting the channel, the peer certificate must pass the
             // profile's remote-cert-tls / verify-x509-name checks.
-            if !sentKeyMaterial, channel.tls.isHandshaken {
+            if !key.sentKeyMaterial, channel.tls.isHandshaken {
                 try channel.tls.verifyPeer(
                     requireServerEKU: profile.remoteCertTLS == .server,
                     name: requestedNameMatch()
                 )
-                log("peer verified: \(channel.tls.peerSubject ?? "<no subject>")")
-                sendKeyMaterial()
+                if key.keyID == 0 {
+                    log("peer verified: \(channel.tls.peerSubject ?? "<no subject>")")
+                }
+                sendKeyMaterial(on: key)
             }
         } catch let error as TLSEngineError {
             fail(.tlsSetupFailed(error.description))
@@ -769,6 +801,10 @@ public final class OpenVPNConnection: @unchecked Sendable {
         }
     }
 
+    private func isLive(_ key: KeyState) -> Bool {
+        key === primary || key === pending
+    }
+
     /// Maps the profile's `verify-x509-name` onto the engine's name match.
     private func requestedNameMatch() -> TLSEngine.X509NameMatch? {
         switch profile.x509NameCheck {
@@ -779,18 +815,22 @@ public final class OpenVPNConnection: @unchecked Sendable {
         }
     }
 
-    private func handleControlMessage(_ message: Data) {
+    private func handleControlMessage(_ message: Data, on key: KeyState) {
         if message == Self.pingString {
             return
         }
-        if state == .connecting || state == .authenticating,
+        if key.sentKeyMaterial, key.serverMaterial == nil,
            let server = KeyMethod2.parse(server: message) {
             if verboseLogging {
                 log("server options: \(server.options)")
             }
-            serverMaterial = server
-            state = .derivingKeys
-            deriveMaterials()
+            key.serverMaterial = server
+            if key === pending {
+                completeRenegotiation(key)
+            } else {
+                state = .derivingKeys
+                deriveMaterials(for: key)
+            }
             return
         }
 
@@ -821,7 +861,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
             // Out-of-band authentication (2FA, web login) is in progress:
             // keep waiting instead of giving up after the usual attempts.
             authPending = true
-            let maxWindow = max(handWindow, TimeInterval(profile.renegSeconds ?? 3600) / 2)
+            let maxWindow = max(handWindow, renegotiationInterval / 2)
             let window = min(maxWindow, TimeInterval(timeout ?? Int(handWindow)))
             negotiationDeadline = Date().timeIntervalSince1970 + window
             log("authentication pending (\(keywords.joined(separator: ", "))): waiting up to \(Int(window))s")
@@ -842,12 +882,13 @@ public final class OpenVPNConnection: @unchecked Sendable {
         }
     }
 
-    private func sendKeyMaterial() {
-        guard let channel = control, let material = clientMaterial else { return }
-        sentKeyMaterial = true
+    private func sendKeyMaterial(on key: KeyState) {
+        key.sentKeyMaterial = true
         do {
-            try channel.sendMessage(KeyMethod2.encode(client: material))
-            state = .authenticating
+            try key.channel.sendMessage(KeyMethod2.encode(client: key.clientMaterial))
+            if key === primary, state != .ready {
+                state = .authenticating
+            }
         } catch {
             fail(.protocolError("key material send failed: \(error)"))
         }
@@ -857,39 +898,64 @@ public final class OpenVPNConnection: @unchecked Sendable {
     /// (EKM vs classic PRF) happens when the PUSH_REPLY arrives —
     /// OpenVPN likewise imports the pushed options before generating
     /// the data channel keys.
-    private func deriveMaterials() {
-        guard let channel = control,
-              let client = clientMaterial,
-              let server = serverMaterial else {
-            fail(.protocolError("missing key material"))
-            return
-        }
-
+    private func computeMaterials(for key: KeyState) -> Bool {
+        guard let server = key.serverMaterial else { return false }
         if preferTLSKeyExport {
-            ekmMaterial = try? KeyExpansion.deriveExporter(tls: channel.tls)
-            if ekmMaterial == nil {
+            key.ekmMaterial = try? KeyExpansion.deriveExporter(tls: key.channel.tls)
+            if key.ekmMaterial == nil {
                 log("exporter unavailable, EKM disabled")
             }
         }
-        prfMaterial = KeyExpansion.derivePRF(
-            client: client, server: server,
-            clientSessionID: channel.localSessionID,
-            serverSessionID: channel.remoteSessionID ?? Data(count: 8)
+        key.prfMaterial = KeyExpansion.derivePRF(
+            client: key.clientMaterial, server: server,
+            clientSessionID: localSessionID,
+            serverSessionID: key.channel.remoteSessionID ?? Data(count: 8)
         )
-        guard prfMaterial != nil else {
+        return key.prfMaterial != nil
+    }
+
+    private func deriveMaterials(for key: KeyState) {
+        guard computeMaterials(for: key) else {
             fail(.keyDerivationFailed)
             return
         }
-
         state = .waitPush
         negotiationDeadline = Date().timeIntervalSince1970 + handWindow
         pushRequestAttempts = 0
-        channel.sendAckIfNeeded(now: Date().timeIntervalSince1970)
+        key.channel.sendAckIfNeeded(now: Date().timeIntervalSince1970)
         requestPush()
     }
 
+    /// Builds the data-channel keys of a key state from the pushed options
+    /// (EKM vs PRF, cipher, epoch format).
+    private func makeDataCrypto(for key: KeyState, pushed: PushedOptions) -> DataChannelCrypto? {
+        let material: Data
+        if pushed.useTLSKeyExport {
+            // The server demands EKM; falling back would silently produce
+            // a key mismatch.
+            guard let ekm = key.ekmMaterial else { return nil }
+            material = ekm
+        } else {
+            guard let prf = key.prfMaterial else { return nil }
+            material = prf
+        }
+        guard let keySet = KeyExpansion.keySet(material: material, cipher: negotiatedCipher, digest: negotiatedDigest) else {
+            return nil
+        }
+        var epochKeys: DataChannelEpochKeySet?
+        if pushed.aeadEpoch {
+            guard let keys = KeyExpansion.epochKeySet(material: material, cipher: negotiatedCipher) else { return nil }
+            epochKeys = keys
+        }
+        return DataChannelCrypto(
+            keys: keySet,
+            epochKeys: epochKeys,
+            replay: profile.replayWindow.map { ReplayWindow(windowSize: $0) } ?? ReplayWindow()
+        )
+    }
+
     private func requestPush() {
-        guard let channel = control else { return }
+        guard let channel = primary?.channel else { return }
         do {
             // Control-channel string messages are sent with their trailing
             // NUL (OpenVPN's tls_send_payload(strlen+1)); the server's
@@ -903,7 +969,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
     }
 
     private func handlePushReply(_ text: String) {
-        guard state == .waitPush else {
+        guard state == .waitPush, let key = primary else {
             // Mid-session updates (PUSH_UPDATE) are not supported; a
             // duplicate PUSH_REPLY for an already established session is
             // harmless.
@@ -922,7 +988,6 @@ public final class OpenVPNConnection: @unchecked Sendable {
             return
         }
 
-        pushedOptions = pushed
         if let peerID = pushed.peerID {
             self.peerID = peerID
         }
@@ -936,14 +1001,6 @@ public final class OpenVPNConnection: @unchecked Sendable {
         }
         pingInterval = TimeInterval(pushed.pingSeconds ?? profile.pingSeconds ?? 10)
         pingRestart = TimeInterval(pushed.pingRestartSeconds ?? profile.pingRestartSeconds ?? 60)
-        if let reneg = pushed.renegSeconds, reneg > 0 {
-            // Refresh the session slightly before the server's own
-            // renegotiation timer fires.
-            sessionDeadline = Date().timeIntervalSince1970 + max(60, TimeInterval(reneg - 30))
-            log("server reneg-sec \(reneg): session refresh scheduled")
-        } else {
-            sessionDeadline = nil
-        }
         if let token = pushed.authToken {
             authToken = token
             authTokenUser = pushed.authTokenUser ?? authTokenUser
@@ -952,52 +1009,26 @@ public final class OpenVPNConnection: @unchecked Sendable {
 
         // The push decides the key derivation method and the cipher —
         // exactly OpenVPN's "import pushed options, then generate keys".
-        let material: Data
-        if pushed.useTLSKeyExport {
-            guard let ekm = ekmMaterial else {
-                // The server demands EKM; refusing to fall back would
-                // silently produce a key mismatch.
-                fail(.keyDerivationFailed)
-                return
-            }
-            material = ekm
-            log("key derivation: tls-ekm (pushed)")
-        } else {
-            guard let prf = prfMaterial else {
-                fail(.keyDerivationFailed)
-                return
-            }
-            material = prf
-            log("key derivation: OpenVPN PRF")
-        }
-
-        guard let keySet = KeyExpansion.keySet(
-            material: material,
-            cipher: negotiatedCipher,
-            digest: negotiatedDigest
-        ) else {
+        guard let crypto = makeDataCrypto(for: key, pushed: pushed) else {
             fail(.keyDerivationFailed)
             return
         }
+        log("key derivation: \(pushed.useTLSKeyExport ? "tls-ekm" : "OpenVPN PRF")\(pushed.aeadEpoch ? ", aead-epoch data format" : "")")
+        key.crypto = crypto
+        key.established = Date().timeIntervalSince1970
+        pushedOptions = pushed
 
-        var epochKeys: DataChannelEpochKeySet? = nil
-        if pushed.aeadEpoch {
-            epochKeys = KeyExpansion.epochKeySet(material: material, cipher: negotiatedCipher)
-            if epochKeys == nil {
-                fail(.keyDerivationFailed)
-                return
+        // Dynamic tls-crypt: renegotiations are wrapped with a key exported
+        // from this first TLS session.
+        if pushed.protocolFlags.contains("dyn-tls-crypt"), let wrapper {
+            if let exported = key.channel.tls.exportKeyMaterial(label: Self.dynamicTlsCryptLabel, length: TlsCrypt.keyMaterialLength) {
+                wrapper.enableDynamicTlsCrypt(exportedKey: exported)
+            } else {
+                log("dynamic tls-crypt key export failed")
             }
-            log("data channel: aead-epoch format")
         }
 
-        dataCrypto = DataChannelCrypto(
-            keys: keySet,
-            epochKeys: epochKeys,
-            replay: profile.replayWindow.map { ReplayWindow(windowSize: $0) } ?? ReplayWindow()
-        )
-        sendCounter = 0
         peerDataV1 = false
-        dataChannelVerified = false
         reconnectAttempt = 0
         authPending = false
         negotiationDeadline = .infinity
@@ -1006,10 +1037,53 @@ public final class OpenVPNConnection: @unchecked Sendable {
         log("connection ready (peer-id \(peerID), cipher \(negotiatedCipher.rawValue))")
     }
 
+    // MARK: - Renegotiation
+
+    /// The renegotiation interval: pushed `reneg-sec`, else the profile's,
+    /// else OpenVPN's default of one hour (0 disables).
+    private var renegotiationInterval: TimeInterval {
+        TimeInterval(pushedOptions?.renegSeconds ?? profile.renegSeconds ?? Int(Self.defaultRenegotiationInterval))
+    }
+
+    /// Starts a soft reset on a new key-id. Data keeps flowing on the
+    /// current key until the new one is negotiated.
+    private func startRenegotiation(keyID requestedKeyID: UInt8? = nil, serverPacket: Data? = nil) {
+        guard state == .ready, pending == nil, let primary,
+              let remoteSessionID = primary.channel.remoteSessionID else { return }
+        let keyID = requestedKeyID ?? nextKeyID
+        nextKeyID = keyID >= 7 ? 1 : keyID + 1
+        guard let key = makeKeyState(keyID: keyID, remoteSessionID: remoteSessionID, softReset: true) else { return }
+        pending = key
+        log("renegotiating keys on key-id \(keyID) (\(serverPacket == nil ? "client" : "server") initiated)")
+        key.channel.sendReset()
+        if let serverPacket {
+            receiveControl(serverPacket, on: key)
+        }
+    }
+
+    /// The server sent its key material for the pending key: switch to the
+    /// new data-channel keys and keep the old ones for in-flight packets.
+    private func completeRenegotiation(_ key: KeyState) {
+        guard computeMaterials(for: key), let pushed = pushedOptions,
+              let crypto = makeDataCrypto(for: key, pushed: pushed) else {
+            fail(.keyDerivationFailed)
+            return
+        }
+        key.crypto = crypto
+        key.established = Date().timeIntervalSince1970
+        lameDuck = primary
+        lameDuckExpiry = Date().timeIntervalSince1970 + Self.transitionWindow
+        primary = key
+        pending = nil
+        log("renegotiation complete: using key-id \(key.keyID)")
+    }
+
     /// Tells the server this client is leaving. Returns true when a
     /// notification was sent.
     private func sendExitNotification() -> Bool {
-        if pushedOptions?.supportsControlChannelExit == true, let channel = control {
+        // The control-channel EXIT needs the server's current key; while a
+        // renegotiation is pending the old channel is no longer accepted.
+        if pushedOptions?.supportsControlChannelExit == true, pending == nil, let channel = primary?.channel {
             do {
                 try channel.sendMessage(Data("EXIT".utf8) + Data([0]))
                 log("sent EXIT to the server")
@@ -1018,7 +1092,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
                 return false
             }
         }
-        guard activeTransport == .udp, dataCrypto != nil else { return false }
+        guard activeTransport == .udp, primary?.crypto != nil else { return false }
         // OCC exit (explicit-exit-notify) for servers without cc-exit.
         for _ in 0..<2 {
             sendIPPacketLocked(Self.occMagic + Data([Self.occExit]))
@@ -1048,37 +1122,42 @@ public final class OpenVPNConnection: @unchecked Sendable {
     }
 
     private func sendIPPacketLocked(_ payload: Data) {
-        guard let crypto = dataCrypto, state == .ready else { return }
-        sendCounter &+= 1
-        // Classic formats carry a 32-bit packet-id that is part of the
-        // AEAD nonce: wrapping it would reuse nonces. Refresh the session
-        // well before that point (epoch format has 2^48 and needs nothing).
-        if !crypto.usesEpoch, sendCounter >= Self.dataChannelRenewalThreshold {
-            log("approaching data-channel packet-id limit: refreshing session")
-            reconnect(advance: false, delay: 0)
-            return
-        }
+        guard state == .ready, let key = primary, var crypto = key.crypto else { return }
         do {
-            let packet = try crypto.encrypt(
+            let packet = try crypto.encryptNext(
                 plaintext: payload,
-                packetID: sendCounter,
                 peerID: peerID,
-                keyID: 0,
+                keyID: key.keyID,
                 useV1Header: peerDataV1
             )
+            key.crypto = crypto
             lastDataSendTime = Date().timeIntervalSince1970
             sendWire(packet)
+        } catch DataChannelError.packetIDExhausted {
+            key.crypto = crypto
+            // Never reuse nonces: drop until the renegotiation completes.
+            startRenegotiation()
         } catch {
             log("data encrypt error: \(error)")
         }
     }
 
     private func handleDataPacket(_ packet: Data) {
-        guard var crypto = dataCrypto else { return }
-        let (opcode, _) = PacketHeader.decode(packet[packet.startIndex])
+        let header = packet[packet.startIndex]
+        let keyID = header & 0x07
+        let key: KeyState
+        if let primary, primary.keyID == keyID {
+            key = primary
+        } else if let lameDuck, lameDuck.keyID == keyID {
+            key = lameDuck
+        } else {
+            return
+        }
+        guard var crypto = key.crypto else { return }
+        let (opcode, _) = PacketHeader.decode(header)
         do {
-            let plaintext = try crypto.decrypt(packet, keyID: 0)
-            dataCrypto = crypto
+            let plaintext = try crypto.decrypt(packet, keyID: keyID)
+            key.crypto = crypto
             // Only authenticated packets count as liveness or format hints.
             lastReceiveTime = Date().timeIntervalSince1970
             if opcode == .dataV1 {
@@ -1122,15 +1201,27 @@ public final class OpenVPNConnection: @unchecked Sendable {
             fail(state == .waitPush ? .pushTimeout : .handshakeTimeout)
             return
         }
-        guard let channel = control else { return }
+        guard let primary else { return }
 
-        if channel.handshakeTimedOut(now: now, window: handWindow) {
+        // Only the newest key state has a live control channel: an OpenVPN
+        // server rejects control packets (even ACKs) on any other key-id,
+        // fatally on TCP.
+        let active = pending ?? primary
+        if active.channel.handshakeTimedOut(now: now, window: handWindow) {
             fail(.handshakeTimeout)
             return
         }
-
-        _ = channel.retransmitDue(now: now)
-        channel.sendAckIfNeeded(now: now)
+        _ = active.channel.retransmitDue(now: now)
+        active.channel.sendAckIfNeeded(now: now)
+        if lameDuck != nil, now > lameDuckExpiry {
+            lameDuck = nil
+        }
+        if let pending, now - pending.started > handWindow {
+            // OpenVPN: "TLS key negotiation failed to occur within 60 seconds".
+            log("renegotiation of key-id \(pending.keyID) did not complete")
+            fail(.handshakeTimeout)
+            return
+        }
 
         if state == .waitPush, pendingPushOptions.isEmpty {
             // Re-send PUSH_REQUEST every second (every five while the
@@ -1154,10 +1245,14 @@ public final class OpenVPNConnection: @unchecked Sendable {
                 reconnect(advance: true)
                 return
             }
-            if let deadline = sessionDeadline, now > deadline {
-                log("renegotiation deadline reached: refreshing session")
-                reconnect(advance: false, delay: 0)
-                return
+            if pending == nil, let established = primary.established {
+                let interval = renegotiationInterval
+                if interval > 0, now - established >= interval {
+                    startRenegotiation()
+                } else if primary.crypto?.needsRenegotiation == true {
+                    log("data-channel key usage limit reached")
+                    startRenegotiation()
+                }
             }
         }
     }
@@ -1241,6 +1336,29 @@ public final class OpenVPNConnection: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// One TLS session on one key-id and the data-channel keys it produced.
+    private final class KeyState {
+        let keyID: UInt8
+        let channel: ControlChannel
+        let clientMaterial: KeyMethod2.ClientMaterial
+        var serverMaterial: KeyMethod2.ServerMaterial?
+        var sentKeyMaterial = false
+        /// Key material from both derivations; the PUSH_REPLY decides which
+        /// one the server uses (`key-derivation tls-ekm` vs classic PRF).
+        var ekmMaterial: Data?
+        var prfMaterial: Data?
+        var crypto: DataChannelCrypto?
+        let started: TimeInterval
+        var established: TimeInterval?
+
+        init(keyID: UInt8, channel: ControlChannel, clientMaterial: KeyMethod2.ClientMaterial, started: TimeInterval) {
+            self.keyID = keyID
+            self.channel = channel
+            self.clientMaterial = clientMaterial
+            self.started = started
+        }
+    }
 
     enum ResolvedRemote: CustomStringConvertible {
         case ipv4(sockaddr_in)

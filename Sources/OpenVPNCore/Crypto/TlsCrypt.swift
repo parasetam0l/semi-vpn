@@ -76,9 +76,12 @@ public struct TlsCrypt: Sendable {
     public var packetID: UInt32
     public var packetTime: UInt32
 
-    public init(clientKey: ClientKey) {
+    /// - Parameter initialPacketID: the counter before the first packet.
+    ///   Session keys start at `EARLY_NEG_START` to announce early
+    ///   negotiation; the dynamic renegotiation key starts at 0.
+    public init(clientKey: ClientKey, initialPacketID: UInt32 = TlsCrypt.earlyNegStart) {
         self.clientKey = clientKey
-        self.packetID = TlsCrypt.earlyNegStart
+        self.packetID = initialPacketID
         self.packetTime = UInt32(Date().timeIntervalSince1970)
     }
 

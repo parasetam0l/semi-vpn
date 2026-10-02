@@ -567,7 +567,8 @@ public enum PeerInfo {
     public static let protocolBits = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4)
         | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11)
 
-    public static func build(platform: String = "mac", ciphers: [String] = supportedCiphers) -> String {
+    public static func build(platform: String = "mac", ciphers: [String] = supportedCiphers,
+                             protocolBits: Int = protocolBits) -> String {
         let lines = [
             "IV_VER=2.7.6",
             "IV_PLAT=\(platform)",

@@ -212,7 +212,8 @@ FAILED_NAMES=()
 
 # run_case NAME EXPECT "SERVER ARGS" "CLI ARGS" ["BACKGROUND COMMAND"] < profile-directives
 #   EXPECT: ready | held | fail:<regex> | timeout
-#   Optional checks after `;`: clientlog:<regex> serverlog:<regex> !serverlog:<regex>
+#   Optional checks after `;`: clientlog:<regex> !clientlog:<regex> serverlog:<regex>
+#   !serverlog:<regex> count:<regex>=<minimum client log matches>
 #   The background command runs alongside the client (e.g. management actions).
 run_case() {
     local name="$1" expect="$2" server_args="$3" cli_args="$4" background="${5:-}"
@@ -259,10 +260,15 @@ run_case() {
             [[ $status -eq 1 ]] && grep -Eq "FAILED: .*($pattern)" "$clog" || { ok=0; reason="expected failure matching /$pattern/ (exit $status)"; } ;;
     esac
     local check
-    IFS=' ' read -r -a check_list <<< "$checks"
+    IFS=';' read -r -a check_list <<< "$checks"
     for check in ${check_list[@]+"${check_list[@]}"}; do
         case "$check" in
             clientlog:*) grep -Eq "${check#clientlog:}" "$clog" || { ok=0; reason="client log lacks /${check#clientlog:}/"; } ;;
+            !clientlog:*) grep -Eq "${check#!clientlog:}" "$clog" && { ok=0; reason="client log has /${check#!clientlog:}/"; } ;;
+            count:*)
+                local spec="${check#count:}" pattern count
+                pattern="${spec%=*}"; count="${spec##*=}"
+                [[ "$(grep -Ec "$pattern" "$clog")" -ge "$count" ]] || { ok=0; reason="client log has fewer than $count /$pattern/"; } ;;
             serverlog:*) grep -Eq "${check#serverlog:}" "$slog" || { ok=0; reason="server log lacks /${check#serverlog:}/"; } ;;
             !serverlog:*) grep -Eq "${check#!serverlog:}" "$slog" && { ok=0; reason="server log has /${check#!serverlog:}/"; } ;;
         esac
@@ -523,7 +529,7 @@ remote 127.0.0.1 1
 remote 127.0.0.1 @PORT@
 EOF
 
-run_case exit-notify-on-disconnect "held;serverlog:exit message received" "--verb 7" "--hold 2" <<'EOF'
+run_case exit-notify-on-disconnect "held;serverlog:Delayed exit" "" "--hold 2" <<'EOF'
 proto udp
 EOF
 
@@ -560,6 +566,58 @@ ROUTES=""
 for i in $(seq 1 120); do ROUTES="$ROUTES --push \"route 10.$((i / 250)).$((i % 250)).0 255.255.255.0\""; done
 run_case push-continuation "ready;clientlog:continues in the next message;clientlog:routes=120" "$ROUTES" "" <<'EOF'
 proto udp
+EOF
+
+# MARK: Renegotiation (soft reset on a new key-id; data keeps flowing)
+
+RENEG_OK="held;count:renegotiation complete=2;!clientlog:ping restart;!serverlog:Authenticate/Decrypt packet error;!serverlog:TLS (Error|ERROR)"
+
+run_case reneg-server-initiated "$RENEG_OK;clientlog:server initiated" "--reneg-sec 3" "--hold 8" <<'EOF'
+proto udp
+EOF
+
+run_case reneg-client-initiated "$RENEG_OK;clientlog:client initiated" "--reneg-sec 0" "--hold 8" <<'EOF'
+proto udp
+reneg-sec 3
+EOF
+
+run_case reneg-tcp "$RENEG_OK" "--proto tcp4-server --reneg-sec 3" "--hold 8" <<'EOF'
+proto tcp
+EOF
+
+run_case reneg-tls-auth "$RENEG_OK" "--reneg-sec 3 --tls-auth ta.key 0 --auth SHA256" "--hold 8" <<EOF
+proto udp
+auth SHA256
+key-direction 1
+<tls-auth>
+$(cat ta.key)
+</tls-auth>
+EOF
+
+run_case reneg-tls-crypt "$RENEG_OK" "--reneg-sec 3 --tls-crypt tc.key" "--hold 8" <<EOF
+proto udp
+<tls-crypt>
+$(cat tc.key)
+</tls-crypt>
+EOF
+
+run_case reneg-tls-crypt-v2 "$RENEG_OK" "--reneg-sec 3 --tls-crypt-v2 v2server.key" "--hold 8" <<EOF
+proto udp
+<tls-crypt-v2>
+$(cat v2client.key)
+</tls-crypt-v2>
+EOF
+
+run_case reneg-cbc-prf "$RENEG_OK;clientlog:OpenVPN PRF" "--reneg-sec 3 --data-ciphers AES-256-CBC --auth SHA256" "--hold 8 --no-ekm" <<'EOF'
+proto udp
+cipher AES-256-CBC
+data-ciphers AES-256-CBC
+auth SHA256
+EOF
+
+run_case reneg-with-credentials "$RENEG_OK" "--reneg-sec 3 $AUTH_SERVER" "--hold 8 --auth-user-pass alice 'correct horse'" <<'EOF'
+proto udp
+auth-user-pass
 EOF
 
 echo

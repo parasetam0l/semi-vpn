@@ -333,8 +333,22 @@ public struct KeyExpansion {
             sendKey: sendKey,
             sendIV: sendIV,
             recvKey: recvKey,
-            recvIV: recvIV
+            recvIV: recvIV,
+            sendSecret: sendSecret,
+            recvSecret: recvSecret
         )
+    }
+
+    /// `E(n+1) = OVPN-Expand-Label(E(n), "datakey upd", "", 32)`.
+    static func nextEpochSecret(_ secret: Data) -> Data? {
+        expandLabel(secret: secret, label: "datakey upd", length: 32)
+    }
+
+    /// The data key and implicit IV of an epoch secret.
+    static func epochDataKey(secret: Data, cipher: OVPNProfile.Cipher) -> (Data, Data)? {
+        guard let key = expandLabel(secret: secret, label: "data_key", length: cipherKeyLength(cipher)),
+              let iv = expandLabel(secret: secret, label: "data_iv", length: 12) else { return nil }
+        return (key, iv)
     }
 
     /// `OVPN-Expand-Label(secret, label, "", length)` from `crypto_epoch.c`:

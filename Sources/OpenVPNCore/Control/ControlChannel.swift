@@ -157,7 +157,13 @@ public final class ControlWrapper: @unchecked Sendable {
 /// starts with P_CONTROL_SOFT_RESET_V1.
 public final class ControlChannel: @unchecked Sendable {
     static let maxFragmentLength = 1200
+    /// OpenVPN's CONTROL_SEND_ACK_MAX.
     static let maxAcksPerPacket = 4
+    /// Packets in flight before an acknowledgement is required
+    /// (TLS_RELIABLE_N_SEND_BUFFERS; the peer buffers 12 out of order).
+    static let sendWindow = 6
+    /// Out-of-order packets buffered ahead of the next expected one.
+    static let receiveWindow: UInt32 = 64
     static let maxRetransmitTimeout: TimeInterval = 8
     static let initialTimeout: TimeInterval = 1.0
     static let ackCoalesce: TimeInterval = 0.2
@@ -178,8 +184,11 @@ public final class ControlChannel: @unchecked Sendable {
     private var nextSendPacketID: UInt32 = 1
     private var nextRecvPacketID: UInt32 = 0
     private var outOfOrder: [UInt32: Data] = [:]
+    /// Received packet-ids not yet acknowledged, oldest first.
     private var pendingAcks: [UInt32] = []
-    private var lruAcks: [UInt32] = []
+    /// Recently sent acks, newest first (OpenVPN's ack_mru), repeated to
+    /// fill each packet's ack vector in case earlier acks were lost.
+    private var recentAcks: [UInt32] = []
     private var lastAckSent: TimeInterval = 0
     private var sentWKCOnce = false
 
@@ -291,23 +300,35 @@ public final class ControlChannel: @unchecked Sendable {
         flushSendQueue()
     }
 
-    /// Sends the oldest unacked packet, carrying the current ACK vector.
+    /// Sends every packet in the send window that has not been sent yet.
     private func flushSendQueue() {
-        guard let index = sendQueue.indices.first(where: { !sendQueue[$0].acked }) else { return }
         let now = Date().timeIntervalSince1970
-        sendQueue[index].nextTry = now + sendQueue[index].timeout
-        if sendQueue[index].firstSent == nil {
+        for index in sendQueue.indices.prefix(Self.sendWindow) where sendQueue[index].firstSent == nil {
             sendQueue[index].firstSent = now
+            sendQueue[index].nextTry = now + sendQueue[index].timeout
+            sendWire(buildPacket(at: index))
         }
-        sendWire(buildPacket(at: index))
+    }
+
+    /// The ack vector for the next packet: up to four pending acks (oldest
+    /// first; the rest wait for the next packet), topped up with recently
+    /// sent ones, as OpenVPN's reliable_ack_write does.
+    private func takeAcks() -> [UInt32] {
+        let fresh = Array(pendingAcks.prefix(Self.maxAcksPerPacket))
+        pendingAcks.removeFirst(fresh.count)
+        recentAcks = fresh.reversed() + recentAcks.filter { !fresh.contains($0) }
+        recentAcks = Array(recentAcks.prefix(8))
+        var acks = fresh
+        for ack in recentAcks where acks.count < Self.maxAcksPerPacket && !acks.contains(ack) {
+            acks.append(ack)
+        }
+        return acks
     }
 
     private func buildPacket(at index: Int) -> Data {
         // OpenVPN repeats recently sent acks (lru_acks) on every packet.
         let entry = sendQueue[index]
-        let acks = Array((lruAcks + pendingAcks).suffix(Self.maxAcksPerPacket))
-        lruAcks = Array(acks.suffix(Self.maxAcksPerPacket))
-        pendingAcks.removeAll(keepingCapacity: true)
+        let acks = takeAcks()
         lastAckSent = Date().timeIntervalSince1970
 
         let body = ControlPacketBody(
@@ -339,13 +360,18 @@ public final class ControlChannel: @unchecked Sendable {
         )
     }
 
-    /// Sends a pure P_ACK for any unacknowledged received packets.
+    /// Sends pure P_ACKs for unacknowledged received packets (several when
+    /// more than four are pending).
     public func sendAckIfNeeded(now: TimeInterval) {
-        let acks = Array((lruAcks + pendingAcks).suffix(Self.maxAcksPerPacket))
-        guard !acks.isEmpty, now - lastAckSent > Self.ackCoalesce else { return }
-        lruAcks = Array(acks.suffix(Self.maxAcksPerPacket))
-        pendingAcks.removeAll(keepingCapacity: true)
+        guard !pendingAcks.isEmpty, now - lastAckSent > Self.ackCoalesce else { return }
+        while !pendingAcks.isEmpty {
+            sendAck()
+        }
         lastAckSent = now
+    }
+
+    private func sendAck() {
+        let acks = takeAcks()
 
         let body = ControlPacketBody(
             ackPacketIDs: acks,
@@ -391,19 +417,17 @@ public final class ControlChannel: @unchecked Sendable {
                 sendQueue[index].acked = true
             }
             sendQueue.removeAll(where: { $0.acked })
-            if let oldest = sendQueue.first,
-               !ackedSet.isEmpty,
-               oldest.nextTry > Date().timeIntervalSince1970 {
-                sendQueue[0].nextTry = 0
-            }
-            // Acknowledged packets freed up the window: send the next one.
+            // Acknowledged packets freed up the window: send what fits.
             flushSendQueue()
         }
 
-        // Acknowledge this packet. P_ACK packets carry no payload and no
+        // Acknowledge this packet unless it is beyond our receive window
+        // (it will be retransmitted). P_ACK packets carry no payload and no
         // own packet-id (the parsed value is a placeholder zero) — they
         // must not be acknowledged.
-        if opcode != .ackV1, !pendingAcks.contains(body.packetID) {
+        if opcode != .ackV1,
+           body.packetID < nextRecvPacketID &+ Self.receiveWindow,
+           !pendingAcks.contains(body.packetID) {
             pendingAcks.append(body.packetID)
         }
 
@@ -444,7 +468,7 @@ public final class ControlChannel: @unchecked Sendable {
                 outOfOrder.removeValue(forKey: nextRecvPacketID)
                 nextRecvPacketID += 1
             }
-        } else if pid > nextRecvPacketID, pid < nextRecvPacketID + 1024 {
+        } else if pid > nextRecvPacketID, pid < nextRecvPacketID &+ Self.receiveWindow {
             outOfOrder[pid] = payload
         }
         // Duplicates (pid < next) are dropped silently, as OpenVPN does.
@@ -489,21 +513,22 @@ public final class ControlChannel: @unchecked Sendable {
 
     // MARK: - Housekeeping
 
-    /// Transmits the oldest unacked packet whose timer has elapsed (a
-    /// queued packet's first transmission, or a retransmission with
-    /// exponential backoff).
+    /// Retransmits every packet in the send window whose timer elapsed,
+    /// with exponential backoff. Returns true when anything was sent.
+    @discardableResult
     public func retransmitDue(now: TimeInterval) -> Bool {
-        guard let index = sendQueue.indices.first(where: {
-            !sendQueue[$0].acked && sendQueue[$0].nextTry <= now
-        }) else { return false }
-        if sendQueue[index].firstSent == nil {
-            sendQueue[index].firstSent = now
-        } else {
-            sendQueue[index].timeout = min(sendQueue[index].timeout * 2, Self.maxRetransmitTimeout)
+        var sent = false
+        for index in sendQueue.indices.prefix(Self.sendWindow) where sendQueue[index].nextTry <= now {
+            if sendQueue[index].firstSent == nil {
+                sendQueue[index].firstSent = now
+            } else {
+                sendQueue[index].timeout = min(sendQueue[index].timeout * 2, Self.maxRetransmitTimeout)
+            }
+            sendQueue[index].nextTry = now + sendQueue[index].timeout
+            sendWire(buildPacket(at: index))
+            sent = true
         }
-        sendQueue[index].nextTry = now + sendQueue[index].timeout
-        sendWire(buildPacket(at: index))
-        return true
+        return sent
     }
 
     /// True when a packet has stayed unacknowledged for longer than

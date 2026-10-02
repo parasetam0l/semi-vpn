@@ -108,3 +108,22 @@ func testDynamicTlsCrypt() throws {
     #expect(crypt.packetID == 0)
     #expect(!crypt.isV2)
 }
+
+@Test("TCP framer handles large bursts and compacts its buffer")
+func testTCPFramerBurst() throws {
+    var framer = TCPPacketFramer()
+    var stream = Data()
+    for index in 0..<5000 {
+        stream.append(TCPPacketFramer.frame(Data(repeating: UInt8(index & 0xFF), count: 1 + index % 1400)))
+    }
+    var received: [Data] = []
+    var offset = 0
+    while offset < stream.count {
+        let chunk = stream[offset..<min(stream.count, offset + 65536)]
+        received += try framer.feed(Data(chunk))
+        offset += chunk.count
+    }
+    #expect(received.count == 5000)
+    #expect(received[4999] == Data(repeating: UInt8(4999 & 0xFF), count: 1 + 4999 % 1400))
+    #expect(!framer.hasPartialData)
+}

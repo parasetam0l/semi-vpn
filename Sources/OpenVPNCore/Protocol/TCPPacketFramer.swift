@@ -5,6 +5,9 @@ import Foundation
 /// packets and produces framed packets for sending.
 public struct TCPPacketFramer: Sendable {
     private var buffer: [UInt8] = []
+    /// Start of the unconsumed bytes; consumed bytes are compacted away in
+    /// bulk instead of shifting the buffer once per packet.
+    private var readIndex = 0
 
     public init() {}
 
@@ -13,12 +16,19 @@ public struct TCPPacketFramer: Sendable {
     public mutating func feed(_ bytes: Data) throws -> [Data] {
         buffer.append(contentsOf: bytes)
         var packets: [Data] = []
-        while buffer.count >= 2 {
-            let length = (Int(buffer[0]) << 8) | Int(buffer[1])
+        while buffer.count - readIndex >= 2 {
+            let length = (Int(buffer[readIndex]) << 8) | Int(buffer[readIndex + 1])
             guard length > 0 else { throw OpenVPNProtocolError.truncatedPacket }
-            guard buffer.count >= 2 + length else { break }
-            packets.append(Data(buffer[2..<(2 + length)]))
-            buffer.removeFirst(2 + length)
+            guard buffer.count - readIndex >= 2 + length else { break }
+            packets.append(Data(buffer[(readIndex + 2)..<(readIndex + 2 + length)]))
+            readIndex += 2 + length
+        }
+        if readIndex == buffer.count {
+            buffer.removeAll(keepingCapacity: true)
+            readIndex = 0
+        } else if readIndex > 32 * 1024 {
+            buffer.removeFirst(readIndex)
+            readIndex = 0
         }
         return packets
     }
@@ -31,5 +41,5 @@ public struct TCPPacketFramer: Sendable {
     }
 
     /// True while a partial packet is being reassembled.
-    public var hasPartialData: Bool { !buffer.isEmpty }
+    public var hasPartialData: Bool { buffer.count > readIndex }
 }

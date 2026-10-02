@@ -31,6 +31,9 @@ public final class TLSEngine: @unchecked Sendable {
     private let ctxPointer: OpaquePointer
     private let connPointer: OpaquePointer
     private let peerName: String
+    /// Reused I/O buffers (the engine is confined to one queue).
+    private var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
+    private var drainBuffer = [UInt8](repeating: 0, count: 16 * 1024)
 
     /// How the server certificate name is matched (`verify-x509-name`).
     public enum X509NameMatch: Sendable, Equatable {
@@ -174,10 +177,9 @@ public final class TLSEngine: @unchecked Sendable {
 
     /// Reads a complete application message if one is available.
     public func readPlaintext() throws -> Data? {
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        let rc = ovpn_tls_read(connPointer, &buffer, buffer.count)
+        let rc = ovpn_tls_read(connPointer, &readBuffer, readBuffer.count)
         if rc > 0 {
-            return Data(buffer.prefix(Int(rc)))
+            return Data(readBuffer.prefix(Int(rc)))
         }
         if rc == 0 { return nil }
         throw TLSEngineError.closed
@@ -191,12 +193,11 @@ public final class TLSEngine: @unchecked Sendable {
 
     /// Drains all pending ciphertext (one TLS record at a time is typical).
     public func drainCiphertext() -> Data {
-        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
         var out = Data()
         while ovpn_tls_out_pending(connPointer) > 0 {
-            let rc = Int(ovpn_tls_drain(connPointer, &buffer, buffer.count))
+            let rc = Int(ovpn_tls_drain(connPointer, &drainBuffer, drainBuffer.count))
             guard rc > 0 else { break }
-            out.append(contentsOf: buffer.prefix(rc))
+            out.append(contentsOf: drainBuffer.prefix(rc))
         }
         return out
     }

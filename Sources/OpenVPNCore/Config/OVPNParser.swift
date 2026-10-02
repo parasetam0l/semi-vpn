@@ -256,7 +256,13 @@ public struct OVPNParser: Sendable {
             }
 
         case "tls-version-min":
-            profile.tlsVersionMin = args.first
+            profile.tlsVersionMin = args.joined(separator: " ")
+
+        case "tls-cipher":
+            profile.tlsCipher = args.first
+
+        case "tls-ciphersuites":
+            profile.tlsCiphersuites = args.first
 
         case "remote-cert-tls":
             if let mode = OVPNProfile.RemoteCertTLS(rawValue: args.first?.lowercased() ?? "") {

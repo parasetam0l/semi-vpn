@@ -535,7 +535,16 @@ public final class OpenVPNConnection: @unchecked Sendable {
         }
 
         do {
-            let tls = try TLSEngine(caPEM: ca, certPEM: profile.certPEM, keyPEM: profile.keyPEM)
+            let tls = try TLSEngine(
+                caPEM: ca,
+                certPEM: profile.certPEM,
+                keyPEM: profile.keyPEM,
+                extraCertsPEM: profile.extraCertsPEM,
+                keyPassphrase: profile.keyPassphrase,
+                minimumVersion: profile.tlsVersionMin,
+                cipherList: profile.tlsCipher,
+                cipherSuites: profile.tlsCiphersuites
+            )
 
             let sessionID = KeyMethod2.randomBytes(8)
             let channel = ControlChannel(
@@ -565,6 +574,8 @@ public final class OpenVPNConnection: @unchecked Sendable {
             )
 
             channel.sendHardReset()
+        } catch let error as TLSEngineError {
+            fail(.tlsSetupFailed(error.description))
         } catch {
             fail(.tlsSetupFailed("\(error)"))
         }
@@ -746,11 +757,7 @@ public final class OpenVPNConnection: @unchecked Sendable {
                 sendKeyMaterial()
             }
         } catch let error as TLSEngineError {
-            if case .peerVerificationFailed(let reason) = error {
-                fail(.tlsSetupFailed("peer verification failed: \(reason)"))
-            } else {
-                fail(.tlsSetupFailed("\(error)"))
-            }
+            fail(.tlsSetupFailed(error.description))
         } catch ControlChannelError.malformedPacket {
             // Unauthenticated garbage (e.g. tls-auth HMAC failure): drop
             // the datagram, keep the session, as OpenVPN does.

@@ -28,10 +28,31 @@ typedef enum {
 typedef enum {
     OVPN_X509_NAME = 0,        /* commonName equals name */
     OVPN_X509_NAME_PREFIX = 1, /* commonName starts with name */
-    OVPN_X509_SUBJECT = 2      /* full subject DN (RFC2253) equals name */
+    OVPN_X509_SUBJECT = 2      /* full subject DN (OpenVPN's "C=.., O=.., CN=..") equals name */
 } ovpn_x509_name_kind;
 
-ovpn_tls_ctx *ovpn_tls_ctx_new(const char *ca_pem, const char *cert_pem, const char *key_pem);
+/*
+ * Client TLS configuration. Strings may be NULL or empty when unused.
+ * - cert_pem: the client certificate, optionally followed by its chain
+ * - extra_certs_pem: additional chain certificates (extra-certs)
+ * - key_password: passphrase of an encrypted key; never prompted for
+ * - min_version: 0 for the default (TLS 1.2), else e.g. TLS1_3_VERSION
+ * - cipher_list / ciphersuites: tls-cipher / tls-ciphersuites
+ */
+typedef struct {
+    const char *ca_pem;
+    const char *cert_pem;
+    const char *extra_certs_pem;
+    const char *key_pem;
+    const char *key_password;
+    int min_version;
+    const char *cipher_list;
+    const char *ciphersuites;
+} ovpn_tls_config;
+
+/* Creates a context. On failure returns NULL and, when err/err_len are
+ * given, writes the reason there. */
+ovpn_tls_ctx *ovpn_tls_ctx_new(const ovpn_tls_config *config, char *err, size_t err_len);
 const char *ovpn_tls_ctx_error(const ovpn_tls_ctx *t);
 void ovpn_tls_ctx_free(ovpn_tls_ctx *t);
 
@@ -55,8 +76,9 @@ int ovpn_tls_get_server_cert_subject(ovpn_tls_conn *c, char *out, size_t cap);
 /*
  * Verifies the peer certificate after the handshake:
  * - the CA chain is already checked by SSL_VERIFY_PEER;
- * - when require_server_eku is set, the certificate must carry the
- *   TLS Web Server Authentication EKU (remote-cert-tls server);
+ * - when require_server_eku is set, the certificate must carry a key
+ *   usage extension and the TLS Web Server Authentication EKU
+ *   (remote-cert-tls server);
  * - when name is non-empty, the subject/commonName is matched per
  *   name_kind (verify-x509-name).
  * Returns 1 on success, 0 on failure (reason in ovpn_tls_conn_error).

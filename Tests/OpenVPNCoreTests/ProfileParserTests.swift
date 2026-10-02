@@ -156,3 +156,26 @@ func testInliner() throws {
     // Self-contained profiles pass through untouched.
     #expect(try OVPNProfileInliner.inline("remote a\n<ca>\nX\n</ca>", baseDirectory: directory) == "remote a\n<ca>\nX\n</ca>")
 }
+
+@Test("parses TLS options and detects encrypted keys")
+func testTLSOptions() throws {
+    let profile = try OVPNParser().parse("""
+    tls-version-min 1.3 or-highest
+    tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384
+    tls-ciphersuites TLS_AES_256_GCM_SHA384
+    <key>
+    -----BEGIN ENCRYPTED PRIVATE KEY-----
+    AAAA
+    -----END ENCRYPTED PRIVATE KEY-----
+    </key>
+    """)
+    #expect(profile.tlsVersionMin == "1.3 or-highest")
+    #expect(TLSEngine.protocolVersion(profile.tlsVersionMin) == 0x0304)
+    #expect(TLSEngine.protocolVersion("1.2") == 0)
+    #expect(profile.tlsCipher == "ECDHE-ECDSA-AES256-GCM-SHA384")
+    #expect(profile.tlsCiphersuites == "TLS_AES_256_GCM_SHA384")
+    #expect(profile.requiresKeyPassphrase)
+    #expect(throws: TLSEngineError.self) {
+        try TLSEngine(caPEM: "x", certPEM: "x", keyPEM: profile.keyPEM)
+    }
+}

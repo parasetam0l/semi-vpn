@@ -130,6 +130,9 @@ public struct OVPNProfile: Sendable {
     public var tlsCryptKey: Data?
     public var keyDirection: Int?
     public var tlsVersionMin: String?
+    /// `tls-cipher` (TLS 1.2 cipher list) and `tls-ciphersuites` (TLS 1.3).
+    public var tlsCipher: String?
+    public var tlsCiphersuites: String?
 
     // MARK: - PKI
 
@@ -219,6 +222,8 @@ public struct OVPNProfile: Sendable {
         tlsCryptKey: Data? = nil,
         keyDirection: Int? = nil,
         tlsVersionMin: String? = nil,
+        tlsCipher: String? = nil,
+        tlsCiphersuites: String? = nil,
         caPEM: String? = nil,
         certPEM: String? = nil,
         keyPEM: String? = nil,
@@ -263,6 +268,8 @@ public struct OVPNProfile: Sendable {
         self.tlsCryptKey = tlsCryptKey
         self.keyDirection = keyDirection
         self.tlsVersionMin = tlsVersionMin
+        self.tlsCipher = tlsCipher
+        self.tlsCiphersuites = tlsCiphersuites
         self.caPEM = caPEM
         self.certPEM = certPEM
         self.keyPEM = keyPEM
@@ -317,6 +324,12 @@ public struct OVPNProfile: Sendable {
             ciphers.append(cipher.rawValue)
         }
         return ciphers
+    }
+
+    /// True when the private key is encrypted (or `askpass` is set) and a
+    /// passphrase must be supplied before connecting.
+    public var requiresKeyPassphrase: Bool {
+        askPass || (keyPEM?.contains("ENCRYPTED") ?? false)
     }
 
     /// Issues that make the profile impossible to connect with.

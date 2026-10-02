@@ -60,6 +60,35 @@ for name in server client; do
     "$OPENSSL" x509 -req -in "$name.csr" -CA ca.crt -CAkey ca.key -CAcreateserial \
         -out "$name.crt" -days 30 -extfile ext.cnf -extensions "$name" 2>/dev/null
 done
+cat >> ext.cnf <<'EOF'
+[intermediate]
+basicConstraints=critical,CA:TRUE,pathlen:0
+keyUsage=critical,keyCertSign,cRLSign
+[server_noeku]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+EOF
+# Intermediate CA and a client certificate it issued (the server only
+# trusts the root, so the client must send the intermediate).
+"$OPENSSL" req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout int.key -out int.csr -subj "/CN=SemiVPN Test Intermediate" 2>/dev/null
+"$OPENSSL" x509 -req -in int.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -out int.crt -days 30 -extfile ext.cnf -extensions intermediate 2>/dev/null
+"$OPENSSL" req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout client-int.key -out client-int.csr -subj "/CN=semi-client-int" 2>/dev/null
+"$OPENSSL" x509 -req -in client-int.csr -CA int.crt -CAkey int.key -CAcreateserial \
+    -out client-int.crt -days 30 -extfile ext.cnf -extensions client 2>/dev/null
+# A passphrase-protected copy of the client key.
+"$OPENSSL" pkey -in client.key -aes256 -passout pass:open-sesame -out client-enc.key 2>/dev/null
+# Server certificates without any EKU (OpenSSL accepts it for any purpose,
+# remote-cert-tls must not) and with only clientAuth (OpenSSL rejects it).
+"$OPENSSL" req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout server-noeku.key -out server-noeku.csr -subj "/CN=semi-server-noeku" 2>/dev/null
+"$OPENSSL" x509 -req -in server-noeku.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -out server-noeku.crt -days 30 -extfile ext.cnf -extensions server_noeku 2>/dev/null
+"$OPENSSL" x509 -req -in server-noeku.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -out server-clienteku.crt -days 30 -extfile ext.cnf -extensions client 2>/dev/null
+
 openvpn --genkey secret ta.key
 openvpn --genkey secret tc.key
 openvpn --genkey tls-crypt-v2-server v2server.key
@@ -342,6 +371,109 @@ EOF
 run_case file-references "ready" "--tls-auth ta.key 0" "" <<'EOF'
 proto udp
 tls-auth ta.key 1
+EOF
+
+# MARK: TLS
+
+run_case cert-chain-in-cert-block "ready" "" "" <<EOF
+proto udp
+#nocert
+<cert>
+$(cat client-int.crt int.crt)
+</cert>
+<key>
+$(cat client-int.key)
+</key>
+EOF
+
+run_case cert-chain-extra-certs "ready" "" "" <<EOF
+proto udp
+#nocert
+<cert>
+$(cat client-int.crt)
+</cert>
+<extra-certs>
+$(cat int.crt)
+</extra-certs>
+<key>
+$(cat client-int.key)
+</key>
+EOF
+
+# The server drops the session without a TLS alert, like with any OpenVPN
+# client: the hand-window expires and the client retries.
+run_case cert-chain-missing-intermediate "timeout;clientlog:handshake timed out;serverlog:unable to get local issuer" "" "--timeout 8" <<EOF
+proto udp
+hand-window 3
+#nocert
+<cert>
+$(cat client-int.crt)
+</cert>
+<key>
+$(cat client-int.key)
+</key>
+EOF
+
+run_case encrypted-key "ready" "" "--askpass open-sesame" <<EOF
+proto udp
+#nocert
+<cert>
+$(cat client.crt)
+</cert>
+<key>
+$(cat client-enc.key)
+</key>
+EOF
+
+run_case encrypted-key-no-passphrase "fail:passphrase" "" "" <<EOF
+proto udp
+#nocert
+<cert>
+$(cat client.crt)
+</cert>
+<key>
+$(cat client-enc.key)
+</key>
+EOF
+
+run_case verify-x509-subject "ready" "" "" <<'EOF'
+proto udp
+verify-x509-name "C=TR, O=SemiVPN Test, CN=semi-server"
+EOF
+
+run_case verify-x509-name "ready" "" "" <<'EOF'
+proto udp
+verify-x509-name semi-server name
+EOF
+
+run_case verify-x509-name-prefix "ready" "" "" <<'EOF'
+proto udp
+verify-x509-name semi- name-prefix
+EOF
+
+run_case verify-x509-subject-mismatch "fail:subject mismatch" "" "" <<'EOF'
+proto udp
+verify-x509-name "C=TR, O=Other, CN=semi-server"
+EOF
+
+run_case remote-cert-tls-requires-server-eku "fail:serverAuth EKU" "--cert server-noeku.crt --key server-noeku.key" "" <<'EOF'
+proto udp
+remote-cert-tls server
+EOF
+
+run_case server-cert-wrong-purpose "fail:unsuitable certificate purpose" "--cert server-clienteku.crt --key server-noeku.key" "" <<'EOF'
+proto udp
+EOF
+
+run_case tls-version-min-1.3 "ready" "" "" <<'EOF'
+proto udp
+tls-version-min 1.3
+EOF
+
+run_case tls-version-min-1.3-vs-tls12-server "timeout;clientlog:handshake timed out;serverlog:unsupported protocol" "--tls-version-max 1.2" "--timeout 8" <<'EOF'
+proto udp
+hand-window 3
+tls-version-min 1.3
 EOF
 
 # MARK: Connection state machine

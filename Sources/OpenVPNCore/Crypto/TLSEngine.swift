@@ -1,13 +1,24 @@
 import Foundation
 import COpenVPNTLS
 
-public enum TLSEngineError: Error, Sendable, Equatable {
+public enum TLSEngineError: Error, Sendable, Equatable, CustomStringConvertible {
     case contextCreation(String)
     case connectionCreation(String)
     case handshakeFailed(String)
     case peerVerificationFailed(String)
     case writeFailed
     case closed
+
+    public var description: String {
+        switch self {
+        case .contextCreation(let reason): return reason
+        case .connectionCreation(let reason): return "cannot create the TLS session: \(reason)"
+        case .handshakeFailed(let reason): return "handshake failed: \(reason)"
+        case .peerVerificationFailed(let reason): return "peer verification failed: \(reason)"
+        case .writeFailed: return "write failed"
+        case .closed: return "the TLS session was closed"
+        }
+    }
 }
 
 /// Swift wrapper around the OpenSSL control-channel shim.
@@ -32,13 +43,44 @@ public final class TLSEngine: @unchecked Sendable {
         caPEM: String,
         certPEM: String?,
         keyPEM: String?,
+        extraCertsPEM: String? = nil,
+        keyPassphrase: String? = nil,
+        minimumVersion: String? = nil,
+        cipherList: String? = nil,
+        cipherSuites: String? = nil,
         peerName: String = ""
     ) throws {
-        let ca = caPEM
-        let cert = certPEM ?? ""
-        let key = keyPEM ?? ""
-        guard let ctx = ovpn_tls_ctx_new(ca, cert, key) else {
-            throw TLSEngineError.contextCreation(String(decoding: unsafeUnwrapCString(ovpn_tls_ctx_error(nil)), as: UTF8.self))
+        if let keyPEM, keyPEM.contains("ENCRYPTED"), (keyPassphrase ?? "").isEmpty {
+            throw TLSEngineError.contextCreation("the private key is encrypted; a passphrase is required")
+        }
+        var errorBuffer = [CChar](repeating: 0, count: 512)
+        let context: OpaquePointer? = caPEM.withCString { ca in
+            Self.withOptionalCString(certPEM) { cert in
+                Self.withOptionalCString(extraCertsPEM) { extra in
+                    Self.withOptionalCString(keyPEM) { key in
+                        Self.withOptionalCString(keyPassphrase) { password in
+                            Self.withOptionalCString(cipherList) { ciphers in
+                                Self.withOptionalCString(cipherSuites) { suites in
+                                    var config = ovpn_tls_config(
+                                        ca_pem: ca,
+                                        cert_pem: cert,
+                                        extra_certs_pem: extra,
+                                        key_pem: key,
+                                        key_password: password,
+                                        min_version: Self.protocolVersion(minimumVersion),
+                                        cipher_list: ciphers,
+                                        ciphersuites: suites
+                                    )
+                                    return ovpn_tls_ctx_new(&config, &errorBuffer, errorBuffer.count)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        guard let ctx = context else {
+            throw TLSEngineError.contextCreation(String(decoding: unsafeUnwrapCString(errorBuffer), as: UTF8.self))
         }
         ctxPointer = ctx
         guard let conn = ovpn_tls_conn_new(ctx) else {
@@ -47,6 +89,20 @@ public final class TLSEngine: @unchecked Sendable {
         }
         connPointer = conn
         self.peerName = peerName
+    }
+
+    private static func withOptionalCString<R>(_ string: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+        guard let string else { return body(nil) }
+        return string.withCString { body($0) }
+    }
+
+    /// Maps `tls-version-min` ("1.2", "1.3", optionally "or-highest") to
+    /// the OpenSSL constant; 0 keeps the TLS 1.2 floor.
+    static func protocolVersion(_ value: String?) -> Int32 {
+        switch value?.split(separator: " ").first {
+        case "1.3": return 0x0304   // TLS1_3_VERSION
+        default: return 0           // 1.0/1.1/1.2 never lower the 1.2 floor
+        }
     }
 
     deinit {
@@ -168,6 +224,10 @@ public final class TLSEngine: @unchecked Sendable {
         guard rc != 0 else { return nil }
         return String(decoding: unsafeUnwrapCString(buffer), as: UTF8.self)
     }
+}
+
+private func unsafeUnwrapCString(_ buffer: [CChar]) -> [UInt8] {
+    buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
 }
 
 private func unsafeUnwrapCString(_ pointer: UnsafePointer<CChar>?) -> [UInt8] {

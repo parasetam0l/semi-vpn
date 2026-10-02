@@ -11,6 +11,7 @@ usage: ovpn-cli <profile.ovpn> [options]
                              (default: exit as soon as the tunnel is ready)
   --auth-user-pass USER PASS credentials for auth-user-pass profiles
   --auth-file PATH           credentials file: username on line 1, password on line 2
+  --askpass PASSPHRASE       passphrase of an encrypted private key
   --no-ekm                   force classic PRF key derivation
   --verbose                  log control-channel message contents
   --trace                    print every wire packet (hex prefix)
@@ -25,6 +26,7 @@ struct Options {
     var hold: TimeInterval?
     var authUser: String?
     var authPass: String?
+    var keyPassphrase: String?
     var dumpPath: String?
     var trace = false
     var verbose = false
@@ -69,6 +71,8 @@ struct Options {
                 let lines = text.components(separatedBy: .newlines)
                 options.authUser = lines.first
                 options.authPass = lines.count > 1 ? lines[1] : ""
+            case "--askpass":
+                options.keyPassphrase = values()[0]
             case "--dump":
                 options.dumpPath = values()[0]
             case "--no-ekm":
@@ -116,6 +120,7 @@ do {
     print("error: profile parse failed: \(error)")
     exit(1)
 }
+profile.keyPassphrase = options.keyPassphrase
 for issue in profile.issues {
     print("\(issue.severity == .error ? "error" : "warning"): \(issue.message)")
 }

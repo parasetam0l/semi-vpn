@@ -59,29 +59,104 @@ static void capture_error(char *buf, size_t len)
     }
 }
 
-ovpn_tls_ctx *
-ovpn_tls_ctx_new(const char *ca_pem, const char *cert_pem, const char *key_pem)
+/* Supplies the configured key passphrase; with none, fails instead of
+ * letting OpenSSL prompt on a terminal (which would block or fail inside a
+ * Network Extension). */
+static int
+password_cb(char *buf, int size, int rwflag, void *userdata)
 {
-    if (!ca_pem || !cert_pem || !key_pem) {
+    (void)rwflag;
+    const char *password = userdata;
+    if (!password || !buf || size <= 0)
+    {
+        return 0;
+    }
+    int len = (int)strlen(password);
+    if (len > size)
+    {
+        len = size;
+    }
+    memcpy(buf, password, (size_t)len);
+    return len;
+}
+
+static void set_error(char *err, size_t err_len, const char *prefix)
+{
+    if (!err || err_len == 0)
+    {
+        return;
+    }
+    char detail[200];
+    capture_error(detail, sizeof(detail));
+    snprintf(err, err_len, "%s: %s", prefix, detail);
+}
+
+/* Adds every certificate of a PEM bundle to the context's chain. */
+static int
+add_chain_certs(SSL_CTX *ctx, BIO *bio)
+{
+    X509 *cert;
+    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL)
+    {
+        if (SSL_CTX_add0_chain_cert(ctx, cert) != 1)
+        {
+            X509_free(cert);
+            return 0;
+        }
+    }
+    ERR_clear_error(); /* EOF is reported through the error queue */
+    return 1;
+}
+
+ovpn_tls_ctx *
+ovpn_tls_ctx_new(const ovpn_tls_config *config, char *err, size_t err_len)
+{
+    if (err && err_len)
+    {
+        err[0] = '\0';
+    }
+    if (!config || !config->ca_pem)
+    {
+        if (err && err_len)
+        {
+            snprintf(err, err_len, "no CA certificate");
+        }
         return NULL;
     }
 
     ovpn_tls_ctx *t = calloc(1, sizeof(ovpn_tls_ctx));
-    if (!t) {
+    if (!t)
+    {
         return NULL;
     }
 
     t->ctx = SSL_CTX_new(TLS_client_method());
-    if (!t->ctx) {
-        capture_error(t->errbuf, sizeof(t->errbuf));
+    if (!t->ctx)
+    {
+        set_error(err, err_len, "SSL_CTX_new");
         free(t);
         return NULL;
     }
 
-    /* Control channel: TLS 1.2 minimum; TLS 1.3 preferred when the server
-     * supports it (OpenVPN 2.6+ servers negotiate TLS 1.3). */
-    SSL_CTX_set_min_proto_version(t->ctx, TLS1_2_VERSION);
+    /* Control channel: TLS 1.2 minimum (OpenVPN's default); TLS 1.3
+     * preferred when the server supports it. tls-version-min may only
+     * raise the floor. */
+    int min_version = config->min_version > TLS1_2_VERSION ? config->min_version : TLS1_2_VERSION;
+    SSL_CTX_set_min_proto_version(t->ctx, min_version);
     SSL_CTX_set_max_proto_version(t->ctx, TLS1_3_VERSION);
+
+    if (config->cipher_list && config->cipher_list[0]
+        && SSL_CTX_set_cipher_list(t->ctx, config->cipher_list) != 1)
+    {
+        set_error(err, err_len, "tls-cipher");
+        goto fail;
+    }
+    if (config->ciphersuites && config->ciphersuites[0]
+        && SSL_CTX_set_ciphersuites(t->ctx, config->ciphersuites) != 1)
+    {
+        set_error(err, err_len, "tls-ciphersuites");
+        goto fail;
+    }
 
     /* NSS key log for debugging the TLS stream */
     SSL_CTX_set_keylog_callback(t->ctx, keylog_cb);
@@ -89,62 +164,104 @@ ovpn_tls_ctx_new(const char *ca_pem, const char *cert_pem, const char *key_pem)
     /* Load every PEM certificate in the CA block (profiles may carry
      * intermediate chains, not just the root). */
     {
-        BIO *mem = BIO_new_mem_buf(ca_pem, (int)strlen(ca_pem));
+        BIO *mem = BIO_new_mem_buf(config->ca_pem, (int)strlen(config->ca_pem));
         X509_STORE *store = SSL_CTX_get_cert_store(t->ctx);
         int count = 0;
-        if (mem && store) {
+        if (mem && store)
+        {
             X509 *ca;
-            while ((ca = PEM_read_bio_X509(mem, NULL, NULL, NULL)) != NULL) {
-                if (X509_STORE_add_cert(store, ca) != 1) {
-                    X509_free(ca);
-                    break;
+            while ((ca = PEM_read_bio_X509(mem, NULL, NULL, NULL)) != NULL)
+            {
+                if (X509_STORE_add_cert(store, ca) == 1)
+                {
+                    count++;
                 }
-                count++;
                 X509_free(ca);
             }
         }
         BIO_free(mem);
         ERR_clear_error(); /* PEM_read_bio_X509 signals EOF via the error queue */
-        if (count == 0) {
-            capture_error(t->errbuf, sizeof(t->errbuf));
-            SSL_CTX_free(t->ctx);
-            free(t);
-            return NULL;
+        if (count == 0)
+        {
+            if (err && err_len)
+            {
+                snprintf(err, err_len, "the CA block contains no valid certificate");
+            }
+            goto fail;
         }
     }
 
     SSL_CTX_set_verify(t->ctx, SSL_VERIFY_PEER, NULL);
 
-    if (cert_pem[0] && key_pem[0]) {
+    const char *cert_pem = config->cert_pem;
+    const char *key_pem = config->key_pem;
+    if (cert_pem && cert_pem[0] && key_pem && key_pem[0])
+    {
         BIO *cert_bio = BIO_new_mem_buf(cert_pem, (int)strlen(cert_pem));
-        BIO *key_bio = BIO_new_mem_buf(key_pem, (int)strlen(key_pem));
         X509 *cert = PEM_read_bio_X509(cert_bio, NULL, NULL, NULL);
-        EVP_PKEY *key = PEM_read_bio_PrivateKey(key_bio, NULL, NULL, NULL);
-        BIO_free(cert_bio);
-        BIO_free(key_bio);
-        if (!cert || !key) {
-            X509_free(cert);
-            EVP_PKEY_free(key);
-            capture_error(t->errbuf, sizeof(t->errbuf));
-            SSL_CTX_free(t->ctx);
-            free(t);
-            return NULL;
+        if (!cert)
+        {
+            BIO_free(cert_bio);
+            set_error(err, err_len, "client certificate");
+            goto fail;
         }
-        if (SSL_CTX_use_certificate(t->ctx, cert) != 1 ||
-            SSL_CTX_use_PrivateKey(t->ctx, key) != 1 ||
-            SSL_CTX_check_private_key(t->ctx) != 1) {
+        if (SSL_CTX_use_certificate(t->ctx, cert) != 1)
+        {
             X509_free(cert);
-            EVP_PKEY_free(key);
-            capture_error(t->errbuf, sizeof(t->errbuf));
-            SSL_CTX_free(t->ctx);
-            free(t);
-            return NULL;
+            BIO_free(cert_bio);
+            set_error(err, err_len, "client certificate");
+            goto fail;
         }
         X509_free(cert);
+        /* Certificates after the leaf form its chain. */
+        int chain_ok = add_chain_certs(t->ctx, cert_bio);
+        BIO_free(cert_bio);
+        if (!chain_ok)
+        {
+            set_error(err, err_len, "client certificate chain");
+            goto fail;
+        }
+
+        if (config->extra_certs_pem && config->extra_certs_pem[0])
+        {
+            BIO *extra_bio = BIO_new_mem_buf(config->extra_certs_pem,
+                                             (int)strlen(config->extra_certs_pem));
+            int extra_ok = add_chain_certs(t->ctx, extra_bio);
+            BIO_free(extra_bio);
+            if (!extra_ok)
+            {
+                set_error(err, err_len, "extra-certs");
+                goto fail;
+            }
+        }
+
+        BIO *key_bio = BIO_new_mem_buf(key_pem, (int)strlen(key_pem));
+        EVP_PKEY *key = PEM_read_bio_PrivateKey(key_bio, NULL, password_cb,
+                                                (void *)config->key_password);
+        BIO_free(key_bio);
+        if (!key)
+        {
+            set_error(err, err_len, config->key_password
+                      ? "private key (wrong passphrase?)"
+                      : "private key (encrypted keys need a passphrase)");
+            goto fail;
+        }
+        int key_ok = SSL_CTX_use_PrivateKey(t->ctx, key) == 1
+                     && SSL_CTX_check_private_key(t->ctx) == 1;
         EVP_PKEY_free(key);
+        if (!key_ok)
+        {
+            set_error(err, err_len, "private key does not match the certificate");
+            goto fail;
+        }
     }
 
     return t;
+
+fail:
+    SSL_CTX_free(t->ctx);
+    free(t);
+    return NULL;
 }
 
 const char *
@@ -220,7 +337,21 @@ ovpn_tls_handshake(ovpn_tls_conn *c)
     if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
         return err == SSL_ERROR_WANT_READ ? OVPN_TLS_WANT_READ : OVPN_TLS_WANT_WRITE;
     }
-    capture_error(c->errbuf, sizeof(c->errbuf));
+    /* Prefer the readable library reason; add the certificate verification
+     * result when that is what failed. */
+    unsigned long code = ERR_peek_last_error();
+    const char *reason = code ? ERR_reason_error_string(code) : NULL;
+    long verify = SSL_get_verify_result(c->ssl);
+    if (verify != X509_V_OK) {
+        snprintf(c->errbuf, sizeof(c->errbuf), "%s (%s)",
+                 reason ? reason : "certificate verify failed",
+                 X509_verify_cert_error_string(verify));
+    } else if (reason) {
+        snprintf(c->errbuf, sizeof(c->errbuf), "%s", reason);
+    } else {
+        capture_error(c->errbuf, sizeof(c->errbuf));
+    }
+    ERR_clear_error();
     return OVPN_TLS_FAILED;
 }
 
@@ -362,11 +493,22 @@ ovpn_tls_verify_peer(ovpn_tls_conn *c, int require_server_eku,
 
     /* remote-cert-tls server: the certificate must be valid for TLS
      * server use (OpenVPN requires the serverAuth EKU to be present). */
-    if (require_server_eku &&
-        !cert_has_eku(cert, "1.3.6.1.5.5.7.3.1")) {
-        snprintf(c->errbuf, sizeof(c->errbuf),
-                 "certificate lacks the serverAuth EKU (remote-cert-tls server)");
-        goto out;
+    if (require_server_eku)
+    {
+        /* remote-cert-tls server = remote-cert-ku (a key usage extension
+         * must be present) + remote-cert-eku serverAuth, as in OpenVPN. */
+        if (!(X509_get_extension_flags(cert) & EXFLAG_KUSAGE))
+        {
+            snprintf(c->errbuf, sizeof(c->errbuf),
+                     "certificate has no key usage extension (remote-cert-tls server)");
+            goto out;
+        }
+        if (!cert_has_eku(cert, "1.3.6.1.5.5.7.3.1"))
+        {
+            snprintf(c->errbuf, sizeof(c->errbuf),
+                     "certificate lacks the serverAuth EKU (remote-cert-tls server)");
+            goto out;
+        }
     }
 
     /* verify-x509-name */
@@ -378,7 +520,10 @@ ovpn_tls_verify_peer(ovpn_tls_conn *c, int require_server_eku,
                 snprintf(c->errbuf, sizeof(c->errbuf), "out of memory");
                 goto out;
             }
-            X509_NAME_print_ex(bio, X509_get_subject_name(cert), 0, XN_FLAG_RFC2253);
+            /* The same rendering OpenVPN's x509_get_subject() uses:
+             * "C=US, O=Example, CN=server". */
+            X509_NAME_print_ex(bio, X509_get_subject_name(cert), 0,
+                               XN_FLAG_SEP_CPLUS_SPC | XN_FLAG_FN_SN | ASN1_STRFLGS_UTF8_CONVERT);
             int len = BIO_read(bio, subj, (int)sizeof(subj) - 1);
             BIO_free(bio);
             if (len <= 0) {

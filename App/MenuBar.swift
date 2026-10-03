@@ -36,7 +36,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         statusCancellable = model.vpn.$status
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in self?.updateIcon(status) }
+            .sink { [weak self] status in
+                self?.updateIcon(status)
+                self?.recheckAddresses(after: status)
+            }
         updateIcon(model.vpn.status)
     }
 
@@ -51,11 +54,19 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         model.refresh()
         ExtensionMonitor.shared.refresh()
+        IPAddressChecker.shared.refresh(vpnConnected: model.vpn.status == .connected)
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         // Take key focus so the panel's controls respond at once and it
         // closes when the user clicks elsewhere.
         popover.contentViewController?.view.window?.makeKey()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Connecting or disconnecting from the open panel changes the address
+    /// with the VPN: check again.
+    private func recheckAddresses(after status: NEVPNStatus) {
+        guard popover.isShown, status == .connected || status == .disconnected else { return }
+        IPAddressChecker.shared.refresh(vpnConnected: status == .connected)
     }
 
     // MARK: - Icon

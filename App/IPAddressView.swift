@@ -124,6 +124,61 @@ struct IPAddressView: View {
     }
 }
 
+/// The addresses in the menu bar panel, checked each time it opens (see
+/// MenuBarController): a spinner until they arrive, and IPv6 only where
+/// there is one.
+struct IPAddressSummary: View {
+    @ObservedObject var checker: IPAddressChecker
+
+    var body: some View {
+        SectionBox {
+            row(icon: "network", tint: .secondary, title: "Without VPN", addresses: checker.regular, first: true)
+            row(icon: "lock.shield.fill", tint: SemiTheme.brand, title: "With VPN", addresses: checker.vpn,
+                sameAsRegular: checker.vpn.v4 != .checking && checker.vpn.v4 == checker.regular.v4)
+        }
+    }
+
+    private func row(icon: String, tint: some ShapeStyle, title: String, addresses: IPAddressView.Addresses,
+                     sameAsRegular: Bool = false, first: Bool = false) -> some View {
+        SectionRow(first: first) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+                .frame(width: 18)
+            Text(title)
+                .lineLimit(1)
+                .fixedSize()
+            Spacer(minLength: 8)
+            switch addresses.v4 {
+            case .checking:
+                ProgressView().controlSize(.small)
+            case .notConnected:
+                Text("Not connected")
+                    .foregroundStyle(.secondary)
+            default:
+                VStack(alignment: .trailing, spacing: 1) {
+                    if case .address(let address) = addresses.v4 {
+                        Text(address)
+                            .font(.system(size: 13, weight: .medium).monospacedDigit())
+                            .foregroundStyle(sameAsRegular ? SemiTheme.amber : .primary)
+                            .help(sameAsRegular ? "The VPN doesn’t change your address." : "")
+                    } else {
+                        Text("Couldn’t check")
+                            .foregroundStyle(.secondary)
+                    }
+                    if case .address(let address) = addresses.v6 {
+                        Text(address)
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .textSelection(.enabled)
+            }
+        }
+    }
+}
+
 /// The window toolbar's globe button and its IP popover.
 struct IPAddressButton: View {
     @EnvironmentObject private var model: AppModel
@@ -228,3 +283,14 @@ final class IPAddressChecker: ObservableObject {
         return try? JSONDecoder().decode(PublicIPLookup.Result.self, from: data)
     }
 }
+
+#if DEBUG
+extension IPAddressChecker {
+    /// Sample addresses for UISnapshots, which never checks.
+    func showPreview(regular: IPAddressView.Addresses, vpn: IPAddressView.Addresses) {
+        self.regular = regular
+        self.vpn = vpn
+        checkedAt = Date()
+    }
+}
+#endif

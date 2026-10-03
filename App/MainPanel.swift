@@ -90,8 +90,9 @@ private struct PlainTitleBar: ViewModifier {
 
 // MARK: - Menu bar
 
-/// The menu bar panel: the connection and its choices, and how many apps
-/// and websites use the VPN; the lists themselves are in the window.
+/// The menu bar panel: the connection and its choices, how many apps and
+/// websites use the VPN (the lists themselves are in the window), and the
+/// IP addresses, checked each time the panel opens.
 struct MenuBarPanel: View {
     @EnvironmentObject private var model: AppModel
 
@@ -111,6 +112,7 @@ struct MenuBarPanel: View {
                         }
                     }
                 }
+                IPAddressSummary(checker: IPAddressChecker.shared)
             }
             footer
         }

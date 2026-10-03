@@ -123,6 +123,7 @@ if [[ "${1:-}" == "--install" ]]; then
     if [[ -n "$installed_team" && "$installed_team" != "$EXPECTED_TEAM_ID" ]]; then
         printf 'Note: the installed SemiVPN was signed by team %s, this build by %s.\n' "$installed_team" "$EXPECTED_TEAM_ID"
         printf 'Profiles and saved passwords are keychain items of the old team: re-import the profiles after installing.\n'
+        printf 'On the first connection macOS asks whether TunnelProvider may use the old build'"'"'s data; the tunnel waits until you allow it.\n'
     fi
 
     running_target="$INSTALL_APP/Contents/MacOS/SemiVPN"

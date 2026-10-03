@@ -1,18 +1,62 @@
 import AppKit
 import Foundation
 
-/// Prepares the bundled Chrome extension for Chrome's one-time "Load
-/// unpacked" flow. Chrome on macOS does not allow a regular app to silently
-/// install a local CRX, so the extension is copied to a stable user directory
-/// that survives SemiVPN app updates.
+/// A Chromium browser the SemiVPN extension can be loaded into. The pinned
+/// extension ID is the same in all of them.
+struct ChromiumBrowser: Identifiable, Hashable {
+    let name: String
+    let bundleIdentifier: String
+    /// The browser's extensions page, typed into its address bar.
+    let extensionsPage: String
+
+    var id: String { bundleIdentifier }
+
+    static let known: [ChromiumBrowser] = [
+        ChromiumBrowser(name: "Google Chrome", bundleIdentifier: "com.google.Chrome", extensionsPage: "chrome://extensions"),
+        ChromiumBrowser(name: "Google Chrome Beta", bundleIdentifier: "com.google.Chrome.beta", extensionsPage: "chrome://extensions"),
+        ChromiumBrowser(name: "Google Chrome Dev", bundleIdentifier: "com.google.Chrome.dev", extensionsPage: "chrome://extensions"),
+        ChromiumBrowser(name: "Google Chrome Canary", bundleIdentifier: "com.google.Chrome.canary", extensionsPage: "chrome://extensions"),
+        ChromiumBrowser(name: "Microsoft Edge", bundleIdentifier: "com.microsoft.edgemac", extensionsPage: "edge://extensions"),
+        ChromiumBrowser(name: "Brave", bundleIdentifier: "com.brave.Browser", extensionsPage: "brave://extensions"),
+        ChromiumBrowser(name: "Vivaldi", bundleIdentifier: "com.vivaldi.Vivaldi", extensionsPage: "vivaldi://extensions"),
+        ChromiumBrowser(name: "Opera", bundleIdentifier: "com.operasoftware.Opera", extensionsPage: "opera://extensions"),
+        ChromiumBrowser(name: "Arc", bundleIdentifier: "company.thebrowser.Browser", extensionsPage: "arc://extensions"),
+        ChromiumBrowser(name: "Chromium", bundleIdentifier: "org.chromium.Chromium", extensionsPage: "chrome://extensions"),
+    ]
+
+    var applicationURL: URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+    }
+
+    /// The known browsers installed on this Mac, Chrome first.
+    static var installed: [ChromiumBrowser] {
+        known.filter { $0.applicationURL != nil }
+    }
+
+    /// The installed browser a report's brand name belongs to.
+    static func installed(named name: String) -> ChromiumBrowser? {
+        installed.first { $0.name == name }
+    }
+}
+
+/// Prepares the bundled extension for the browsers' one-time "Load unpacked"
+/// flow. Chrome on macOS does not let a regular app install an extension, so
+/// the extension is copied to a stable folder that survives app updates; the
+/// extension reloads itself from there when the app installs a new build.
 enum ChromeExtensionInstaller {
-    private static let applicationSupportDirectoryName = "SemiVPN"
     static let extensionDirectoryName = "ChromeExtension"
 
     static var installedDirectoryURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(applicationSupportDirectoryName, isDirectory: true)
-            .appendingPathComponent(extensionDirectoryName, isDirectory: true)
+        BrowserExtension.installedDirectoryURL
+    }
+
+    static var bundledDirectoryURL: URL? {
+        Bundle.main.url(forResource: extensionDirectoryName, withExtension: nil)
+    }
+
+    /// The build this app ships ("0.4.0 (1a2b3c4)").
+    static var bundledBuild: String? {
+        bundledDirectoryURL.flatMap(BrowserExtension.build(ofExtensionAt:))
     }
 
     static var isPrepared: Bool {
@@ -24,8 +68,7 @@ enum ChromeExtensionInstaller {
     /// Checks whether the installed extension differs from the bundled extension and updates it automatically.
     @discardableResult
     static func syncInstalledExtensionIfNeeded() -> Bool {
-        guard isPrepared,
-              let bundledDirectoryURL = Bundle.main.url(forResource: extensionDirectoryName, withExtension: nil) else {
+        guard isPrepared, let bundledDirectoryURL else {
             return false
         }
 
@@ -74,10 +117,7 @@ enum ChromeExtensionInstaller {
     /// Copies the bundled extension to its stable per-user install location.
     @discardableResult
     static func prepare() throws -> URL {
-        guard let bundledDirectoryURL = Bundle.main.url(
-            forResource: extensionDirectoryName,
-            withExtension: nil
-        ) else {
+        guard let bundledDirectoryURL else {
             throw NSError(
                 domain: "com.semivpn.app.chrome-extension",
                 code: 1,
@@ -133,32 +173,34 @@ enum ChromeExtensionInstaller {
         NSWorkspace.shared.activateFileViewerSelecting([directoryURL])
     }
 
-    /// Opens chrome://extensions in Google Chrome. Launch Services can take
-    /// several seconds to hand the URL over, so callers should not issue
-    /// another request until `completion` runs (on the main queue, with an
-    /// error message on failure); each request opens a tab.
-    static func openChromeExtensionSettings(completion: @escaping (String?) -> Void = { _ in }) {
-        guard let url = URL(string: "chrome://extensions"),
-              let chromeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") else {
-            AppLogger.log("Google Chrome is not installed; cannot open extension settings")
-            completion("Google Chrome is not installed.")
+    /// Copies the extension folder's path, for the "Load unpacked" dialog
+    /// (Command-Shift-G, paste).
+    static func copyInstalledDirectoryPath() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(installedDirectoryURL.path, forType: .string)
+    }
+
+    /// Opens `browser`'s extensions page. Launch Services can take several
+    /// seconds to hand the URL over, so callers should not issue another
+    /// request until `completion` runs (on the main queue, with an error
+    /// message on failure); each request opens a tab.
+    static func openExtensionsPage(in browser: ChromiumBrowser, completion: @escaping (String?) -> Void = { _ in }) {
+        guard let url = URL(string: browser.extensionsPage), let applicationURL = browser.applicationURL else {
+            AppLogger.log("\(browser.name) is not installed; cannot open its extensions page")
+            completion("\(browser.name) is not installed.")
             return
         }
 
-        // Open the URL through Chrome directly. Passing chrome://extensions to
-        // NSWorkspace.open(_:) asks Launch Services for a registered handler,
-        // which macOS does not provide for Chrome's internal URL scheme.
+        // Open the URL through the browser directly. Passing chrome:// URLs
+        // to NSWorkspace.open(_:) asks Launch Services for a registered
+        // handler, which macOS does not provide for internal URL schemes.
         let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open(
-            [url],
-            withApplicationAt: chromeURL,
-            configuration: configuration
-        ) { _, error in
+        NSWorkspace.shared.open([url], withApplicationAt: applicationURL, configuration: configuration) { _, error in
             if let error {
-                AppLogger.log("Could not open Chrome extension settings: \(error.localizedDescription)")
+                AppLogger.log("Could not open the \(browser.name) extensions page: \(error.localizedDescription)")
             }
             DispatchQueue.main.async {
-                completion(error.map { "Could not open Chrome: \($0.localizedDescription)" })
+                completion(error.map { "Could not open \(browser.name): \($0.localizedDescription)" })
             }
         }
     }

@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         synchronizeLaunchAtLogin()
         setupStatusItem()
         requestNotificationAuthorization()
+        ExtensionMonitor.shared.start()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if let window = self.findMainWindow() {
@@ -559,7 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         AppLogger.log("notifications: cleared stale status notifications")
     }
 
-    private func postNotification(title: String, body: String) {
+    func postNotification(title: String, body: String) {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized,

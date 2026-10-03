@@ -39,10 +39,6 @@ struct ContentView: View {
     @State private var extensiveLogging = AppLogger.enabled
     @State private var launchAtLogin = false
     @State private var launchAtLoginError: String?
-    @State private var chromeExtensionReady = false
-    @State private var chromeExtensionError: String?
-    @State private var chromeExtensionDirectory: URL?
-    @State private var openingChromeSetup = false
     @State private var tunnelRegistered = false
     @State private var perAppConfigSaved = false
     @State private var vpnConfigSaved = false
@@ -182,119 +178,6 @@ struct ContentView: View {
             case .profiles: return "doc.on.doc"
             case .diagnostics: return "waveform.path.ecg"
             }
-        }
-    }
-
-    private enum SemiTheme {
-        static let canvas = Color(red: 0.025, green: 0.035, blue: 0.095)
-        static let sidebar = Color(red: 0.045, green: 0.060, blue: 0.145)
-        static let panel = Color(red: 0.065, green: 0.085, blue: 0.19)
-        static let panelRaised = Color(red: 0.095, green: 0.125, blue: 0.255)
-        static let line = Color(red: 0.35, green: 0.55, blue: 1.0).opacity(0.18)
-        static let textMuted = Color.white.opacity(0.62)
-        static let cyan = Color(red: 0.12, green: 0.82, blue: 1.0)
-        static let violet = Color(red: 0.58, green: 0.28, blue: 1.0)
-        static let green = Color(red: 0.28, green: 0.88, blue: 0.58)
-        static let accent = LinearGradient(colors: [cyan, violet], startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
-    private struct AccentButtonStyle: ButtonStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(SemiTheme.accent)
-                        .opacity(configuration.isPressed ? 0.78 : 1.0)
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(.white.opacity(0.20), lineWidth: 1)
-                }
-                .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-        }
-    }
-
-    private struct LargeAccentButtonStyle: ButtonStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(configuration.isPressed ? 0.78 : 1.0))
-                .padding(.horizontal, 22)
-                .padding(.vertical, 13)
-                .background {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(SemiTheme.accent)
-                        .opacity(configuration.isPressed ? 0.78 : 1.0)
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(.white.opacity(0.22), lineWidth: 1)
-                }
-                .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-        }
-    }
-
-    private struct LargeDisconnectButtonStyle: ButtonStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(configuration.isPressed ? 0.78 : 0.94))
-                .padding(.horizontal, 22)
-                .padding(.vertical, 13)
-                .background {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(SemiTheme.panelRaised.opacity(configuration.isPressed ? 0.65 : 0.92))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(Color.red.opacity(0.72), lineWidth: 1)
-                }
-                .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-        }
-    }
-
-    private struct SecondaryButtonStyle: ButtonStyle {
-        @Environment(\.isEnabled) private var isEnabled
-
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .opacity(isEnabled ? 1 : 0.5)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(configuration.isPressed ? 0.72 : 0.92))
-                .padding(.horizontal, 13)
-                .padding(.vertical, 8)
-                .background {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(SemiTheme.panelRaised.opacity(configuration.isPressed ? 0.65 : 0.92))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(SemiTheme.cyan.opacity(0.32), lineWidth: 1)
-                }
-                .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-        }
-    }
-
-    private struct DisconnectButtonStyle: ButtonStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(configuration.isPressed ? 0.72 : 0.94))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(SemiTheme.panelRaised.opacity(configuration.isPressed ? 0.65 : 0.92))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.red.opacity(0.72), lineWidth: 1)
-                }
-                .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
         }
     }
 
@@ -2107,49 +1990,7 @@ struct ContentView: View {
     }
 
     private var chromeExtensionSettings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Chrome extension")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Image(systemName: chromeExtensionReady ? "checkmark.circle.fill" : "circle.dashed")
-                    .foregroundStyle(chromeExtensionReady ? Color.green : Color.secondary)
-                Button(chromeExtensionReady ? "Re-sync / Update" : "Prepare") {
-                    // First-time preparation continues in Chrome; a re-sync
-                    // only refreshes the folder.
-                    prepareChromeExtension(thenOpenChrome: !chromeExtensionReady)
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .controlSize(.small)
-            }
-            Text(chromeExtensionError ?? (chromeExtensionReady
-                 ? "Ready to load in Chrome with Developer mode."
-                 : "Copies the offline extension to a stable folder on this Mac."))
-                .font(.caption)
-                .foregroundStyle(chromeExtensionError == nil ? Color.secondary : Color.red)
-                .fixedSize(horizontal: false, vertical: true)
-            Text((chromeExtensionDirectory ?? ChromeExtensionInstaller.installedDirectoryURL).path)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(SemiTheme.textMuted)
-                .lineLimit(2)
-            HStack(spacing: 8) {
-                Button(openingChromeSetup ? "Opening Chrome…" : "Open Chrome setup") {
-                    openChromeSetup()
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .controlSize(.small)
-                .disabled(openingChromeSetup)
-                Button("Reveal folder") {
-                    ChromeExtensionInstaller.revealInstalledDirectory()
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .controlSize(.small)
-            }
-            Text("In Chrome: enable Developer mode, choose Load unpacked, and select the folder above. This is required once per Mac.")
-                .font(.system(size: 10))
-                .foregroundStyle(SemiTheme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        BrowserExtensionPanel(monitor: ExtensionMonitor.shared)
     }
 
     // MARK: - Actions
@@ -2184,38 +2025,8 @@ struct ContentView: View {
     }
 
     private func refreshChromeExtensionStatus() {
-        _ = ChromeExtensionInstaller.syncInstalledExtensionIfNeeded()
-        let directory = ChromeExtensionInstaller.installedDirectoryURL
-        chromeExtensionDirectory = ChromeExtensionInstaller.isPrepared ? directory : nil
-        chromeExtensionReady = ChromeExtensionInstaller.isPrepared
-        chromeExtensionError = nil
-    }
-
-    private func openChromeSetup() {
-        guard !openingChromeSetup else { return }
-        openingChromeSetup = true
-        ChromeExtensionInstaller.openChromeExtensionSettings { error in
-            openingChromeSetup = false
-            if let error {
-                chromeExtensionError = error
-            }
-        }
-    }
-
-    private func prepareChromeExtension(thenOpenChrome: Bool) {
-        do {
-            let directory = try ChromeExtensionInstaller.prepare()
-            chromeExtensionDirectory = directory
-            chromeExtensionReady = true
-            chromeExtensionError = nil
-            if thenOpenChrome {
-                openChromeSetup()
-            }
-        } catch {
-            chromeExtensionReady = false
-            chromeExtensionError = error.localizedDescription
-            AppLogger.log("Chrome extension preparation failed: \(error.localizedDescription)")
-        }
+        ChromeExtensionInstaller.syncInstalledExtensionIfNeeded()
+        ExtensionMonitor.shared.refresh()
     }
 
     private func refresh() {

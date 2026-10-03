@@ -36,6 +36,9 @@ final class SettingsWindowController: NSWindowController {
         for tab in Tab.allCases {
             let host = NSHostingController(rootView: SettingsTabView(tab: tab).environmentObject(AppModel.shared))
             host.sizingOptions = [.preferredContentSize]
+            // The tab controller passes the selected tab's title on to the
+            // window; without one, the window is "Untitled".
+            host.title = tab.title
             let item = NSTabViewItem(viewController: host)
             item.label = tab.title
             item.image = NSImage(systemSymbolName: tab.symbol, accessibilityDescription: tab.title)

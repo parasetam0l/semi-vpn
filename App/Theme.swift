@@ -158,3 +158,31 @@ struct StatusOrb: View {
 enum OrbState {
     case connected, changing, off
 }
+
+/// A numbered step of a setup sheet; the number turns into a check mark
+/// when the step is done.
+struct SetupStep<Content: View>: View {
+    let number: Int
+    let done: Bool
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle().fill(done ? SemiTheme.green.opacity(0.18) : SemiTheme.panelRaised)
+                if done {
+                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(SemiTheme.green)
+                } else {
+                    Text("\(number)").font(.system(size: 12, weight: .bold))
+                }
+            }
+            .frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}

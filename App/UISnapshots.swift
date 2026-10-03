@@ -76,6 +76,20 @@ enum UISnapshots {
                 AnyView(MenuBarPanel()
                     .environmentObject(AppModel(preview: sample(status: .connected, mode: .selectedAppsAndBrowser))))
             },
+            Screen(name: "find-profiles", width: 540) {
+                AnyView(ProfileScanSheet { _ in })
+            },
+            Screen(name: "find-profiles-results", width: 540) {
+                AnyView(ProfileScanSheet(previewResults: [
+                    ("berlin-office", "vpn.berlin.example.com", "Downloads"),
+                    ("frankfurt-01", "203.0.113.24", "Downloads"),
+                    ("nyks-office", "srv.nyks.net", "Documents"),
+                    ("gobritanya", "172.104.229.229", "Desktop"),
+                    ("lab-gateway", "vpn.lab.example.net", "Documents"),
+                    ("home-router", "home.example.org", "Desktop"),
+                    ("old-backup", "10.8.0.1", "Documents"),
+                ]))
+            },
             Screen(name: "notices", width: 400) {
                 AnyView(VStack(spacing: 12) {
                     NoticeCard(icon: "lock.shield", tint: SemiTheme.amber,

@@ -1,6 +1,7 @@
 import AppKit
 import OpenVPNCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Asks for a profile's username and password and/or key passphrase.
 struct CredentialPrompt: View {
@@ -72,13 +73,15 @@ struct CredentialPrompt: View {
 }
 
 /// Finds .ovpn files in the folders the user picks and imports the chosen
-/// ones.
+/// ones. Laid out like the browser extension's setup sheet.
 struct ProfileScanSheet: View {
     let onImport: ([URL]) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    private enum Source: CaseIterable {
+    private enum Source: CaseIterable, Identifiable {
         case desktop, documents, downloads, openVPN
+
+        var id: Self { self }
 
         var title: String {
             switch self {
@@ -99,10 +102,12 @@ struct ProfileScanSheet: View {
         }
     }
 
-    private struct Found: Identifiable, Hashable {
+    fileprivate struct Found: Identifiable, Hashable {
         let url: URL
         let name: String
         let host: String
+        /// The folder it was found in, as the user chose it.
+        let folder: String
         var id: URL { url }
     }
 
@@ -111,7 +116,11 @@ struct ProfileScanSheet: View {
     @State private var found: [Found] = []
     @State private var chosen: Set<URL> = []
 
-    private enum Phase { case choosing, scanning, results }
+    fileprivate enum Phase { case choosing, scanning, results }
+
+    /// The list shows this many profiles before it scrolls.
+    private static let visibleRows = 6
+    private static let rowHeight: CGFloat = 42
 
     /// The OpenVPN Connect folder is offered only when the app is installed.
     private var availableSources: [Source] {
@@ -122,101 +131,168 @@ struct ProfileScanSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Find Profiles on This Mac")
-                .font(.headline)
-            switch phase {
-            case .choosing:
-                Text("Choose where to look for .ovpn files. macOS asks for access to each folder the first time.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(availableSources, id: \.self) { source in
-                        Toggle(source.title, isOn: Binding(
-                            get: { sources.contains(source) },
-                            set: { if $0 { sources.insert(source) } else { sources.remove(source) } }
-                        ))
-                        .toggleStyle(.checkbox)
-                    }
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Find Profiles on This Mac")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("SemiVPN looks for OpenVPN profiles (.ovpn files) and imports the ones you choose. It keeps its own copy of each.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(SemiTheme.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                buttons(primary: "Find", enabled: !sources.isEmpty, action: scan)
-            case .scanning:
-                HStack(spacing: 9) {
-                    ProgressView().controlSize(.small)
-                    Text("Looking for profiles…")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 20)
-            case .results:
-                if found.isEmpty {
-                    Text("No .ovpn files in the chosen folders.")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 20)
-                    HStack {
-                        Spacer()
-                        Button("Close") { dismiss() }
-                            .keyboardShortcut(.defaultAction)
-                    }
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(found) { item in
-                                Toggle(isOn: Binding(
-                                    get: { chosen.contains(item.url) },
-                                    set: { if $0 { chosen.insert(item.url) } else { chosen.remove(item.url) } }
-                                )) {
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(item.name)
-                                        Text("\(item.host) · \(item.url.deletingLastPathComponent().lastPathComponent)")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .toggleStyle(.checkbox)
-                            }
+            }
+
+            SetupStep(number: 1, done: phase == .results, title: "Choose where to look") {
+                VStack(alignment: .leading, spacing: 10) {
+                    LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                              alignment: .leading, spacing: 6) {
+                        ForEach(availableSources) { source in
+                            Toggle(source.title, isOn: Binding(
+                                get: { sources.contains(source) },
+                                set: { if $0 { sources.insert(source) } else { sources.remove(source) } }
+                            ))
+                            .toggleStyle(.checkbox)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 220)
-                    buttons(primary: chosen.count > 1 ? "Import \(chosen.count) Profiles" : "Import",
-                            enabled: !chosen.isEmpty) {
-                        onImport(found.map(\.url).filter { chosen.contains($0) })
-                        dismiss()
+                    HStack(spacing: 8) {
+                        if phase == .results {
+                            Button("Search Again", action: scan)
+                                .buttonStyle(.bordered)
+                                .disabled(sources.isEmpty)
+                        } else {
+                            Button("Find Profiles", action: scan)
+                                .buttonStyle(.borderedProminent)
+                                .keyboardShortcut(.defaultAction)
+                                .disabled(sources.isEmpty || phase == .scanning)
+                        }
+                        if phase == .scanning {
+                            ProgressView().controlSize(.small)
+                            Text("Looking for profiles…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(SemiTheme.textMuted)
+                        } else {
+                            Text("macOS asks for access to each folder the first time.")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(SemiTheme.textMuted)
+                        }
                     }
                 }
             }
+
+            SetupStep(number: 2, done: false, title: "Choose the profiles to import") {
+                switch phase {
+                case .choosing, .scanning:
+                    Text("The profiles SemiVPN finds appear here.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(SemiTheme.textMuted)
+                case .results:
+                    if found.isEmpty {
+                        Text("No .ovpn files in the chosen folders. Choose other folders, or use Import Profile… to pick a file.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(SemiTheme.textMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        resultList
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                if phase == .results, found.count > 1 {
+                    Button(chosen.count == found.count ? "Deselect All" : "Select All") {
+                        chosen = chosen.count == found.count ? [] : Set(found.map(\.url))
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 11))
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                Button(chosen.count > 1 ? "Import \(chosen.count) Profiles" : "Import") {
+                    onImport(found.map(\.url).filter { chosen.contains($0) })
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(phase == .results ? .defaultAction : nil)
+                .disabled(phase != .results || chosen.isEmpty)
+            }
         }
-        .padding(20)
-        .frame(width: 420)
+        .padding(22)
+        .frame(width: 540)
     }
 
-    private func buttons(primary: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        HStack {
-            Spacer()
-            Button("Cancel") { dismiss() }
-                .keyboardShortcut(.cancelAction)
-            Button(primary, action: action)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!enabled)
+    private var resultList: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(found) { item in
+                    resultRow(item)
+                        .overlay(alignment: .top) {
+                            if item.id != found.first?.id {
+                                Rectangle().fill(SemiTheme.line).frame(height: 1)
+                            }
+                        }
+                }
+            }
         }
+        .frame(height: CGFloat(min(found.count, Self.visibleRows)) * Self.rowHeight)
+        .background(RoundedRectangle(cornerRadius: 10).fill(SemiTheme.panelRaised.opacity(0.45)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(SemiTheme.line))
     }
+
+    private func resultRow(_ item: Found) -> some View {
+        let isChosen = Binding(
+            get: { chosen.contains(item.url) },
+            set: { if $0 { chosen.insert(item.url) } else { chosen.remove(item.url) } }
+        )
+        return HStack(spacing: 10) {
+            Toggle(item.name, isOn: isChosen)
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+            Image(nsImage: Self.profileIcon)
+                .resizable()
+                .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Text("\(item.host) · \(item.folder)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(SemiTheme.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: Self.rowHeight)
+        .contentShape(Rectangle())
+        .onTapGesture { isChosen.wrappedValue.toggle() }
+        .help(item.url.path)
+    }
+
+    private static let profileIcon = NSWorkspace.shared.icon(for: UTType(filenameExtension: "ovpn") ?? .data)
 
     private func scan() {
         phase = .scanning
-        let directories = availableSources.filter { sources.contains($0) }.map(\.directory)
+        let folders = availableSources.filter { sources.contains($0) }.map { ($0.directory, $0.title) }
         // Listing and parsing happen off the main thread. A folder is read
         // only after the user chose it, so macOS asks for access then.
         Task.detached(priority: .userInitiated) {
             var results: [Found] = []
-            for directory in directories {
+            for (directory, title) in folders {
                 let files = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
                 for file in files.sorted() where file.hasSuffix(".ovpn") {
                     let url = URL(fileURLWithPath: directory).appendingPathComponent(file)
                     let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
                     let name = AppModel.certificateCommonName(in: text) ?? url.deletingPathExtension().lastPathComponent
                     let host = (try? OVPNParser().parse(text))?.remotes.first?.host ?? "unknown"
-                    results.append(Found(url: url, name: name, host: host))
+                    results.append(Found(url: url, name: name, host: host, folder: title))
                 }
             }
             await MainActor.run {
@@ -227,3 +303,18 @@ struct ProfileScanSheet: View {
         }
     }
 }
+
+#if DEBUG
+extension ProfileScanSheet {
+    /// Sample results for UISnapshots: name, host and folder of each.
+    init(previewResults: [(name: String, host: String, folder: String)]) {
+        let found = previewResults.map {
+            Found(url: URL(fileURLWithPath: "/tmp/\($0.name).ovpn"), name: $0.name, host: $0.host, folder: $0.folder)
+        }
+        self.init(onImport: { _ in })
+        _found = State(initialValue: found)
+        _chosen = State(initialValue: Set(found.map(\.url)))
+        _phase = State(initialValue: .results)
+    }
+}
+#endif

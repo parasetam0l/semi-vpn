@@ -378,7 +378,7 @@ struct ExtensionSetupSheet: View {
                     .foregroundStyle(SemiTheme.cyan)
             }
 
-            step(1, done: openedPage, title: "Open the Extensions page") {
+            SetupStep(number: 1, done: openedPage, title: "Open the Extensions page") {
                 HStack(spacing: 8) {
                     Button(opening ? "Opening \(browser.name)…" : "Open \(browser.name) Extensions") {
                         openPage()
@@ -392,13 +392,13 @@ struct ExtensionSetupSheet: View {
                 }
             }
 
-            step(2, done: false, title: "Turn on “Developer mode”") {
+            SetupStep(number: 2, done: false, title: "Turn on “Developer mode”") {
                 Text("Use the switch in the top-right corner of the Extensions page. It stays on.")
                     .font(.system(size: 11))
                     .foregroundStyle(SemiTheme.textMuted)
             }
 
-            step(3, done: newProfile != nil, title: "Drag this folder onto the Extensions page") {
+            SetupStep(number: 3, done: newProfile != nil, title: "Drag this folder onto the Extensions page") {
                 VStack(alignment: .leading, spacing: 8) {
                     folderTile
                     HStack(spacing: 6) {
@@ -453,24 +453,6 @@ struct ExtensionSetupSheet: View {
         .padding(22)
         .frame(width: 540)
         .onAppear(perform: prepareFolder)
-    }
-
-    private func step<Content: View>(_ number: Int, done: Bool, title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle().fill(done ? SemiTheme.green.opacity(0.18) : SemiTheme.panelRaised)
-                if done {
-                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(SemiTheme.green)
-                } else {
-                    Text("\(number)").font(.system(size: 12, weight: .bold))
-                }
-            }
-            .frame(width: 24, height: 24)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 13, weight: .semibold))
-                content()
-            }
-        }
     }
 
     /// The extension folder, draggable onto the browser's Extensions page.

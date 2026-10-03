@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// The public IP addresses this Mac shows the internet, IPv4 and IPv6,
-/// without and with the VPN. Opened from the window's toolbar.
+/// The public IP addresses this Mac shows the internet, IPv4 and IPv6
+/// (only where there is one), without and with the VPN. Opened from the
+/// window's toolbar.
 struct IPAddressView: View {
     enum Value: Equatable {
         case checking
@@ -86,7 +87,10 @@ struct IPAddressView: View {
                 }
                 if addresses.v4 != .notConnected {
                     line("IPv4", addresses.v4)
-                    line("IPv6", addresses.v6)
+                    // No line for a missing IPv6 address.
+                    if case .address = addresses.v6 {
+                        line("IPv6", addresses.v6)
+                    }
                 }
             }
         }

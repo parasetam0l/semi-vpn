@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The public IP addresses this Mac shows the internet, IPv4 and IPv6,
@@ -191,32 +192,39 @@ final class IPAddressChecker: ObservableObject {
         return .init(v4: value(result.v4, ipv6: false), v6: value(result.v6, ipv6: true))
     }
 
-    /// Runs `SemiProxy --public-ip`, which prints the addresses its traffic
-    /// shows. Per-app VPN rules match the helper by its code signature, so
-    /// this copy is routed like the running one.
+    /// Launches a copy of SemiProxy with `--public-ip`, which writes the
+    /// addresses its traffic shows to a file. It must be launched through
+    /// LaunchServices, like the running helper: macOS attributes a process
+    /// SemiVPN spawns itself to SemiVPN, which the per-app rules don't
+    /// route (tested: such a copy showed the address without the VPN).
     nonisolated private static func lookUpThroughHelper() async -> PublicIPLookup.Result? {
-        guard let url = VPNManager.proxyHelperExecutableURL else { return nil }
-        return await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = url
-            process.arguments = ["--public-ip"]
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            process.terminationHandler = { _ in
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                continuation.resume(returning: try? JSONDecoder().decode(PublicIPLookup.Result.self, from: data))
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(returning: nil)
-                return
-            }
-            // Its lookups give up after 8 seconds.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
-                if process.isRunning { process.terminate() }
-            }
+        guard let helperURL = VPNManager.proxyHelperAppURL else { return nil }
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("semivpn-public-ip-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = ["--public-ip", "--output", output.path]
+        configuration.activates = false
+        configuration.createsNewApplicationInstance = true
+        configuration.addsToRecentItems = false
+        let helper: NSRunningApplication
+        do {
+            helper = try await NSWorkspace.shared.openApplication(at: helperURL, configuration: configuration)
+        } catch {
+            AppLogger.log("ip check: couldn’t launch SemiProxy: \(error)")
+            return nil
         }
+        // Its lookups give up after 8 seconds.
+        let deadline = Date().addingTimeInterval(20)
+        while !helper.isTerminated, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if !helper.isTerminated {
+            helper.forceTerminate()
+            return nil
+        }
+        guard let data = try? Data(contentsOf: output) else { return nil }
+        return try? JSONDecoder().decode(PublicIPLookup.Result.self, from: data)
     }
 }

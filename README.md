@@ -145,7 +145,7 @@ An embedded accessory application (`com.semivpn.proxy`):
 - Includes parent-process watchdog monitoring (`kill(parentPID, 0)`) to terminate cleanly when SemiVPN exits.
 - Refuses hosts that are not in the domain list. While the VPN is disconnected, listed domains connect directly by default, or are refused when "Block listed domains while the VPN is disconnected" is enabled (fail-closed).
 - Its control API only accepts loopback `Host` headers and the SemiVPN extension's pinned origin.
-- `SemiProxy --public-ip` prints the public IPv4 and IPv6 addresses its traffic shows and exits: the app runs it for the IP check's addresses with the VPN, since macOS routes the helper through the tunnel.
+- `SemiProxy --public-ip --output <file>` writes the public IPv4 and IPv6 addresses its traffic shows and exits: the app launches it for the IP check's addresses with the VPN. It must start through LaunchServices like the running helper; macOS attributes a process the app spawns itself to the app, which the per-app rules don't route.
 
 ### 5. SemiVPN App (`App/`)
 

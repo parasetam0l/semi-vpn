@@ -715,24 +715,26 @@ final class VPNManager: ObservableObject {
             AppLogger.log("start: app rule \(entry.name) id=\(signingIdentifier)")
         }
 
-        if selection.domainRouting || selection.routingMode.includesBrowser {
-            guard let helperURL = Self.proxyHelperAppURL else {
-                throw NSError(domain: "com.semivpn.app", code: 7,
-                              userInfo: [NSLocalizedDescriptionKey: "SemiProxy helper application is missing from app bundle."])
-            }
-            guard let requirement = AppCodeSignature.designatedRequirement(for: helperURL), !requirement.isEmpty else {
-                throw NSError(domain: "com.semivpn.app", code: 8,
-                              userInfo: [NSLocalizedDescriptionKey: "Could not read code signature for SemiProxy helper."])
-            }
-            _ = LSRegisterURL(helperURL as CFURL, true)
-            let proxyRule = NEAppRule(
-                signingIdentifier: proxyHelperBundleIdentifier,
-                designatedRequirement: requirement
-            )
-            proxyRule.matchDomains = nil
-            rules.append(proxyRule)
-            AppLogger.log("start: added helper proxy rule (\(proxyHelperBundleIdentifier))")
+        // SemiProxy carries the browser's listed websites, and it looks up
+        // the public address with the VPN for the window's IP popover, so
+        // it is routed in every per-app mode. Without websites it opens no
+        // other connections.
+        guard let helperURL = Self.proxyHelperAppURL else {
+            throw NSError(domain: "com.semivpn.app", code: 7,
+                          userInfo: [NSLocalizedDescriptionKey: "SemiProxy helper application is missing from app bundle."])
         }
+        guard let requirement = AppCodeSignature.designatedRequirement(for: helperURL), !requirement.isEmpty else {
+            throw NSError(domain: "com.semivpn.app", code: 8,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not read code signature for SemiProxy helper."])
+        }
+        _ = LSRegisterURL(helperURL as CFURL, true)
+        let proxyRule = NEAppRule(
+            signingIdentifier: proxyHelperBundleIdentifier,
+            designatedRequirement: requirement
+        )
+        proxyRule.matchDomains = nil
+        rules.append(proxyRule)
+        AppLogger.log("start: added helper proxy rule (\(proxyHelperBundleIdentifier))")
         return rules
     }
 

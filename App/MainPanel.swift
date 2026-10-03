@@ -31,6 +31,9 @@ struct MainWindowView: View {
         .background(SemiTheme.canvas)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                IPAddressButton()
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     SettingsWindowController.shared.show()
                 } label: {

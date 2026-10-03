@@ -42,6 +42,7 @@ SemiVPN delivers unprecedented routing flexibility on macOS: connect system-wide
 - **Compact Native Interface**: One window with the status, Connect, the profile, what uses the VPN, and a searchable list of the apps or websites; the same controls in a menu bar panel; a Settings window for profiles, the browser extension, updates and diagnostics. Follows light and dark mode.
 - **Built for Long Lists**: Hundreds of apps and websites stay quick: one field searches the list and adds a website, several entries can be switched on or off or removed at once, and both lists import from and export to plain text files.
 - **Changes While Connected**: The profile, the route and the apps can change while connected. On macOS 27 app changes apply within seconds; a new profile or route applies with one click on Reconnect.
+- **IP Address Check**: The globe button in the window shows the public IPv4 and IPv6 addresses without and with the VPN (looked up at icanhazip.com when you open it or click Refresh), and warns when the VPN doesn't change one.
 - **Automatic Updates**: Checks GitHub Releases once a day ([Sparkle](https://sparkle-project.org)) and asks before installing a new version.
 - **One-Click Profile Scanner**: Automatically discovers `.ovpn` configuration profiles in your Downloads, Desktop, and Documents folders.
 - **Credentials and Keychain**: Prompts for `auth-user-pass` credentials and private-key passphrases, optionally remembers them in the Keychain, and hands profiles and secrets to the tunnel with each start request rather than through the Network Extension preferences, which are stored unencrypted on disk.
@@ -57,7 +58,7 @@ SemiVPN offers four routing modes, chosen in the window's **Use VPN for** menu:
 | Mode | Traffic Scope | Underlying Mechanism |
 | :--- | :--- | :--- |
 | **All Apps** | Entire system | `NEPacketTunnelProvider` that follows the server: the default route when it pushes `redirect-gateway` (or no routes), only its pushed routes for a split-tunnel server. |
-| **Selected Apps** | Only user-chosen apps | Native macOS per-app VPN via `NEAppRule`. Unselected apps route direct via standard physical interfaces. |
+| **Selected Apps** | Only user-chosen apps | Native macOS per-app VPN via `NEAppRule`. Unselected apps route direct via standard physical interfaces. `SemiProxy` has a rule too, for the IP check; it carries no website traffic in this mode. |
 | **Apps and Websites** | Chosen apps + specified domains | Native `NEAppRule` for chosen applications plus a helper rule for `SemiProxy`, routing matched Chrome domains. |
 | **Websites Only** | Specified domains only | Dedicated helper `NEAppRule` for `SemiProxy`. All other system apps remain direct. |
 
@@ -144,6 +145,7 @@ An embedded accessory application (`com.semivpn.proxy`):
 - Includes parent-process watchdog monitoring (`kill(parentPID, 0)`) to terminate cleanly when SemiVPN exits.
 - Refuses hosts that are not in the domain list. While the VPN is disconnected, listed domains connect directly by default, or are refused when "Block listed domains while the VPN is disconnected" is enabled (fail-closed).
 - Its control API only accepts loopback `Host` headers and the SemiVPN extension's pinned origin.
+- `SemiProxy --public-ip` prints the public IPv4 and IPv6 addresses its traffic shows and exits: the app runs it for the IP check's addresses with the VPN, since macOS routes the helper through the tunnel.
 
 ### 5. SemiVPN App (`App/`)
 

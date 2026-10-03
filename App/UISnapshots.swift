@@ -76,6 +76,23 @@ enum UISnapshots {
                 AnyView(MenuBarPanel()
                     .environmentObject(AppModel(preview: sample(status: .connected, mode: .selectedAppsAndBrowser))))
             },
+            Screen(name: "ip-addresses", width: 380) {
+                AnyView(IPAddressView(regular: .init(v4: .address("198.51.100.23"), v6: .address("2001:db8:4f2a:1c00:8d3e:91ff:fe21:7a4b")),
+                                      vpn: .init(v4: .address("172.104.229.229"), v6: .none),
+                                      checkedAt: Date().addingTimeInterval(-4)) {})
+            },
+            Screen(name: "ip-addresses-checking", width: 380) {
+                AnyView(IPAddressView(regular: .init(v4: .address("198.51.100.23"), v6: .none),
+                                      vpn: .init(v4: .checking, v6: .checking), checkedAt: nil) {})
+            },
+            Screen(name: "ip-addresses-same", width: 380) {
+                AnyView(IPAddressView(regular: .init(v4: .address("198.51.100.23"), v6: .none),
+                                      vpn: .init(v4: .address("198.51.100.23"), v6: .none), checkedAt: Date()) {})
+            },
+            Screen(name: "ip-addresses-disconnected", width: 380) {
+                AnyView(IPAddressView(regular: .init(v4: .address("198.51.100.23"), v6: .none),
+                                      vpn: .init(v4: .notConnected, v6: .notConnected), checkedAt: Date()) {})
+            },
             Screen(name: "find-profiles", width: 540) {
                 AnyView(ProfileScanSheet { _ in })
             },

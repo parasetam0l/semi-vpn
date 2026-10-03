@@ -3,6 +3,20 @@ import AppKit
 
 signal(SIGPIPE, SIG_IGN)
 
+// `SemiProxy --public-ip`: prints the public addresses this helper's
+// traffic shows (PublicIPLookup.Result as JSON) and exits. macOS routes the
+// helper through the VPN, so SemiVPN runs it for the addresses with the VPN.
+if CommandLine.arguments.contains("--public-ip") {
+    Task {
+        let result = await PublicIPLookup.lookUp(avoidingTunnels: false)
+        if let data = try? JSONEncoder().encode(result) {
+            FileHandle.standardOutput.write(data)
+        }
+        exit(0)
+    }
+    dispatchMain()
+}
+
 AppLogger.log("SemiProxy helper started (pid \(ProcessInfo.processInfo.processIdentifier))")
 
 // Monitor parent process so helper terminates cleanly when SemiVPN exits

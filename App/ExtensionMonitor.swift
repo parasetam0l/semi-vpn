@@ -114,7 +114,9 @@ final class ExtensionMonitor: ObservableObject {
         guard broken != browserRoutingBroken else { return }
         browserRoutingBroken = broken
         guard broken else {
-            AppLogger.log("routing: browser traffic uses the VPN again")
+            AppLogger.log(SharedConfig.loadRuntimeState().forwardingAllowed
+                ? "routing: browser traffic uses the VPN again"
+                : "routing: VPN disconnected")
             return
         }
         AppLogger.log("routing: macOS routes SemiProxy outside the VPN")

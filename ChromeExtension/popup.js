@@ -395,6 +395,12 @@ function versionOf(build) {
   return String(build || "").split(" ")[0];
 }
 
+// A build as shown next to another one: the version alone, or with its
+// fingerprint when both share a version ("0.4.0 (3cb5d4e)").
+function shownBuild(build, other) {
+  return build !== other && versionOf(build) === versionOf(other) ? build : versionOf(build);
+}
+
 // -1, 0 or 1 for dotted version numbers.
 function compareVersions(a, b) {
   const left = versionOf(a).split(".").map(Number);
@@ -423,10 +429,9 @@ function renderUpdateNotice(configuration) {
       versionOf(RUNNING_BUILD) + ". Update the SemiVPN app, or reload the extension to use the app's copy.";
   } else {
     elements.updateTitle.textContent = "Extension update ready";
-    elements.updateDetail.textContent = (order > 0
-      ? "SemiVPN installed extension " + versionOf(target) + "; this browser still runs " + versionOf(RUNNING_BUILD) + ". "
-      : "SemiVPN installed a newer build of extension " + versionOf(target) + ". ") +
-      "Open the Extensions page and click the reload button (↻) on “SemiVPN Domain Routing”.";
+    elements.updateDetail.textContent = "SemiVPN installed extension " + shownBuild(target, RUNNING_BUILD) +
+      "; this browser still runs " + shownBuild(RUNNING_BUILD, target) +
+      ". Open the Extensions page and click the reload button (↻) on “SemiVPN Domain Routing”.";
   }
   elements.updateFolderPath.textContent = configuration.extensionFolder || "~/Library/Application Support/SemiVPN/ChromeExtension";
   elements.updateNotice.hidden = false;

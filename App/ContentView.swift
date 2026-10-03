@@ -70,6 +70,11 @@ struct ContentView: View {
                         onRepair: repairVPNRouting
                     )
                 }
+                if !extensionMonitor.profilesNeedingUpdate.isEmpty, workspaceSection != .browser {
+                    ExtensionUpdateBanner(monitor: extensionMonitor) {
+                        workspaceSection = .browser
+                    }
+                }
                 if workspaceSection != .overview {
                     Rectangle()
                         .fill(SemiTheme.line)

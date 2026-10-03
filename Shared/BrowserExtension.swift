@@ -40,6 +40,15 @@ public enum BrowserExtension {
         String(build.prefix { $0 != " " })
     }
 
+    /// `build` as shown next to `other`: the version alone, or with its
+    /// fingerprint when both share a version ("0.4.0 (3cb5d4e)").
+    public static func display(_ build: String, comparedTo other: String?) -> String {
+        guard let other, other != build, version(ofBuild: other) == version(ofBuild: build) else {
+            return version(ofBuild: build)
+        }
+        return build
+    }
+
     /// What one browser profile running the extension last reported.
     public struct Report: Codable, Equatable, Identifiable, Sendable {
         /// Random, generated once per browser profile.

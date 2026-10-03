@@ -38,6 +38,12 @@ final class ExtensionMonitor: ObservableObject {
 
         var id: String { report.instance }
         var version: String { BrowserExtension.version(ofBuild: report.build) }
+
+        /// The running build, with its fingerprint when the version alone
+        /// would not tell it from `other`.
+        func shownBuild(comparedTo other: String?) -> String {
+            BrowserExtension.display(report.build, comparedTo: other)
+        }
         var browser: ChromiumBrowser? { ChromiumBrowser.installed(named: report.browser) }
     }
 
@@ -142,8 +148,8 @@ final class ExtensionMonitor: ObservableObject {
             notified.insert(profile.id + "|" + expected)
             AppDelegate.shared?.postNotification(
                 title: "Update the SemiVPN extension in \(profile.report.browser)",
-                body: "\(profile.label) still runs extension \(profile.version). Open its Extensions page and click "
-                    + "the reload button on “SemiVPN Domain Routing”. SemiVPN’s Browser tab shows the steps."
+                body: "\(profile.label) still runs extension \(profile.shownBuild(comparedTo: expected)). Open its Extensions "
+                    + "page and click the reload button on “SemiVPN Domain Routing”."
             )
             AppLogger.log("extension: \(profile.label) needs a manual update (\(profile.report.build) -> \(expected))")
         }

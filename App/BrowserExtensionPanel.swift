@@ -69,8 +69,8 @@ struct BrowserExtensionPanel: View {
                 .buttonStyle(SecondaryButtonStyle())
                 .disabled(!monitor.isPrepared)
                 Spacer()
-                if let version = monitor.expectedVersion {
-                    Text("Extension \(version)")
+                if let build = monitor.expectedBuild {
+                    Text("Extension \(build)")
                         .font(.system(size: 10))
                         .foregroundStyle(SemiTheme.textMuted)
                 }
@@ -129,13 +129,15 @@ struct BrowserExtensionPanel: View {
 
     private func detail(for profile: ExtensionMonitor.Profile) -> String {
         let seen = profile.isActive ? "active now" : "last active " + Self.relative(profile.report.lastSeen)
+        let expected = monitor.expectedBuild
+        let new = expected.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? "the new version"
         switch profile.status {
         case .upToDate:
             return "Up to date · \(profile.version) · \(seen)"
         case .updateNeeded:
-            return "Runs \(profile.version) · reload it to use \(monitor.expectedVersion ?? "the new version")"
+            return "Runs \(profile.shownBuild(comparedTo: expected)) · reload it to use \(new)"
         case .outdatedIdle:
-            return "Ran \(profile.version) · reload it to update when the browser runs · \(seen)"
+            return "Ran \(profile.shownBuild(comparedTo: expected)) · reload it to update when the browser runs · \(seen)"
         }
     }
 
@@ -160,13 +162,13 @@ struct BrowserExtensionPanel: View {
             Label("Update the extension in \(profile.label)", systemImage: "exclamationmark.triangle.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(SemiTheme.amber)
-            Text("SemiVPN installed extension \(monitor.expectedVersion ?? ""); this browser still runs \(profile.version). A browser loads a new version of an unpacked extension only when you reload it:")
+            Text("SemiVPN installed extension \(monitor.expectedBuild.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? ""); this browser still runs \(profile.shownBuild(comparedTo: monitor.expectedBuild)). A browser loads a new version of an unpacked extension only when you reload it:")
                 .font(.system(size: 11))
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("1. Open SemiVPN’s entry on the browser’s Extensions page.")
                 Text("2. Click the reload button (↻) on “SemiVPN Domain Routing”.")
-                Text("Still on the old version? The browser loads the extension from another folder: remove it there and load the SemiVPN folder instead.")
+                Text("Still on the old version after reloading? Remove “SemiVPN Domain Routing” on that page, then add it again with “Set up again…” below. That also fixes a browser that loads the extension from another folder.")
                     .foregroundStyle(SemiTheme.textMuted)
             }
             .font(.system(size: 11))
@@ -428,6 +430,57 @@ struct ExtensionSetupSheet: View {
             } else {
                 openedPage = true
             }
+        }
+    }
+}
+
+/// Shown above the footer on every tab while a browser profile runs an older
+/// extension build than the one SemiVPN installed.
+struct ExtensionUpdateBanner: View {
+    @ObservedObject var monitor: ExtensionMonitor
+    let onShowSteps: () -> Void
+    @State private var opening = false
+    @State private var message: String?
+
+    var body: some View {
+        if let profile = monitor.profilesNeedingUpdate.first {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(SemiTheme.amber)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(monitor.profilesNeedingUpdate.count > 1
+                         ? "Update the SemiVPN extension in \(monitor.profilesNeedingUpdate.count) browser profiles"
+                         : "Update the SemiVPN extension in \(profile.label)")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("SemiVPN installed extension \(monitor.expectedBuild.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? ""); \(profile.label) still runs \(profile.shownBuild(comparedTo: monitor.expectedBuild)). Open its Extensions page and click the reload button (↻) on “SemiVPN Domain Routing”.")
+                        .font(.system(size: 11))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let message {
+                        Text(message).font(.system(size: 11)).foregroundStyle(.red)
+                    }
+                }
+                Spacer(minLength: 12)
+                HStack(spacing: 8) {
+                    if let browser = profile.browser {
+                        Button(opening ? "Opening…" : "Open Extensions page") {
+                            guard !opening else { return }
+                            opening = true
+                            ChromeExtensionInstaller.openExtensionsPage(in: browser, showingSemiVPN: true) { error in
+                                opening = false
+                                message = error
+                            }
+                        }
+                        .buttonStyle(AccentButtonStyle())
+                        .disabled(opening)
+                    }
+                    Button("Show steps", action: onShowSteps)
+                        .buttonStyle(SecondaryButtonStyle())
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 12)
+            .background(SemiTheme.amber.opacity(0.10))
         }
     }
 }

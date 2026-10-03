@@ -350,6 +350,7 @@ private struct RoutedList: View {
     @EnvironmentObject private var model: AppModel
     @State private var selection: Set<String> = []
     @State private var addError: String?
+    @State private var showLockedHint = false
 
     private var kind: AppModel.ListKind { model.shownListKind ?? .websites }
     private var query: String { model.listSearch }
@@ -414,11 +415,20 @@ private struct RoutedList: View {
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
             if kind == .apps {
                 Button {
-                    model.showAppPicker()
+                    if locked {
+                        showLockedHint = true
+                    } else {
+                        model.showAppPicker()
+                    }
                 } label: {
                     Label("Add Apps…", systemImage: "plus")
                 }
-                .disabled(locked)
+                .popover(isPresented: $showLockedHint, arrowEdge: .bottom) {
+                    LockedAppsHint {
+                        showLockedHint = false
+                        model.disconnect()
+                    }
+                }
             }
         }
     }
@@ -554,8 +564,8 @@ private struct RoutedList: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Text(summary)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12))
+                .foregroundStyle(.primary.opacity(0.75))
             Spacer()
             Menu {
                 Button("Turn All On") { setEnabled(allIdentifiers, true) }
@@ -686,6 +696,31 @@ private struct WebsiteListRow: View {
         .padding(.vertical, 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+    }
+}
+
+/// Shown by Add Apps… while connected: the app rules are fixed until the
+/// VPN disconnects.
+private struct LockedAppsHint: View {
+    let onDisconnect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Disconnect to add apps")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Apps can’t be added or changed while the VPN is connected.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Disconnect", role: .destructive, action: onDisconnect)
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
     }
 }
 

@@ -121,13 +121,20 @@ jobs:
       - name: Check the signatures
         run: |
           extension="$APP/Contents/Library/SystemExtensions/com.semivpn.app.TunnelProvider.systemextension"
+          sparkle="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
           codesign --verify --deep --strict --verbose=2 "$APP"
-          for bundle in "$APP" "$extension" "$APP/Contents/Resources/SemiProxy.app"; do
+          for bundle in "$APP" "$extension" "$APP/Contents/Resources/SemiProxy.app" \
+                        "$sparkle/Autoupdate" "$sparkle/Updater.app" \
+                        "$sparkle/XPCServices/Installer.xpc" "$sparkle/XPCServices/Downloader.xpc"; do
             codesign -dvv "$bundle" 2>&1 | grep -q "Authority=Developer ID Application" \
               || { echo "::error::$bundle is not signed with Developer ID"; exit 1; }
           done
           codesign -d --entitlements - --xml "$extension" | grep -q "packet-tunnel-provider-systemextension" \
             || { echo "::error::The extension lacks the Developer ID Network Extension entitlement"; exit 1; }
+          # Updates are verified with this key; without it none can install.
+          key="$(plutil -extract SUPublicEDKey raw -o - "$APP/Contents/Info.plist")"
+          [[ "$(printf '%s' "$key" | base64 --decode 2>/dev/null | wc -c | tr -d ' ')" == 32 ]] \
+            || { echo "::error::SUPublicEDKey in project.yml is not a Sparkle public key: $key"; exit 1; }
 
       - name: Notarize the app
         env:

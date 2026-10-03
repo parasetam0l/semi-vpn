@@ -37,6 +37,12 @@ struct SemiVPNApp: App {
         // can change.
         .windowResizability(.contentSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    AppUpdater.shared.checkForUpdates()
+                }
+                .disabled(!AppUpdater.shared.isAvailable)
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     SettingsWindowController.shared.show()
@@ -114,6 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         observeStatus(of: model.vpn)
         requestNotificationAuthorization()
         ExtensionMonitor.shared.start()
+        // Starts the daily update check (release builds).
+        _ = AppUpdater.shared
         // Installs the tunnel's system extension, or replaces it after an
         // app update (a no-op when that build is already active).
         SystemExtensionInstaller.shared.activate()

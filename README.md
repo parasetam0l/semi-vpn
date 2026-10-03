@@ -39,7 +39,10 @@ SemiVPN delivers unprecedented routing flexibility on macOS: connect system-wide
 - **Native macOS Per-App VPN**: Uses Apple's modern Network Extension APIs (`NETunnelProviderManager.forPerAppVPN` and `NEAppRule`) so selected applications route all their TCP, UDP, and QUIC traffic through the tunnel at the OS kernel level.
 - **Granular Domain Split-Tunneling**: Route specific web domains (and optional subdomains) through the tunnel while keeping the rest of your browsing direct.
 - **SemiProxy Auxiliary Agent**: Lightweight background proxy helper (`com.semivpn.proxy`) registered with LaunchServices (`LSUIElement: true`) for seamless OS-level routing without Dock clutter.
-- **Modern SwiftUI Interface**: Clean dark-mode workspace organized into Overview, Routing, Browser, Profiles, and Diagnostics sections.
+- **Compact Native Interface**: One window with the status, Connect, the profile, what uses the VPN, and a searchable list of the apps or websites; the same controls in a menu bar panel; a Settings window for profiles, the browser extension, updates and diagnostics. Follows light and dark mode.
+- **Built for Long Lists**: Hundreds of apps and websites stay quick: one field searches the list and adds a website, several entries can be switched on or off or removed at once, and both lists import from and export to plain text files.
+- **Changes While Connected**: The profile, the route and the apps can change while connected. On macOS 27 app changes apply within seconds; a new profile or route applies with one click on Reconnect.
+- **Automatic Updates**: Checks GitHub Releases once a day ([Sparkle](https://sparkle-project.org)) and asks before installing a new version.
 - **One-Click Profile Scanner**: Automatically discovers `.ovpn` configuration profiles in your Downloads, Desktop, and Documents folders.
 - **Credentials and Keychain**: Prompts for `auth-user-pass` credentials and private-key passphrases, optionally remembers them in the Keychain, and hands profiles and secrets to the tunnel with each start request rather than through the Network Extension preferences, which are stored unencrypted on disk.
 - **Server-Driven Configuration**: Applies pushed routes (including split tunnels and `net_gateway` exclusions), DNS servers, search and split-DNS domains, topology, MTU, and `auth-token` reconnects.
@@ -49,18 +52,26 @@ SemiVPN delivers unprecedented routing flexibility on macOS: connect system-wide
 
 ## Routing Modes
 
-SemiVPN offers four distinct routing modes configured directly from the **Routing** workspace:
+SemiVPN offers four routing modes, chosen in the window's **Use VPN for** menu:
 
 | Mode | Traffic Scope | Underlying Mechanism |
 | :--- | :--- | :--- |
-| **All apps** | Entire system | `NEPacketTunnelProvider` that follows the server: the default route when it pushes `redirect-gateway` (or no routes), only its pushed routes for a split-tunnel server. |
-| **Selected apps only** | Only user-chosen apps | Native macOS per-app VPN via `NEAppRule`. Unselected apps route direct via standard physical interfaces. |
-| **Selected apps + browser** | Chosen apps + specified domains | Native `NEAppRule` for chosen applications plus a helper rule for `SemiProxy`, routing matched Chrome domains. |
-| **Browser only** | Specified domains only | Dedicated helper `NEAppRule` for `SemiProxy`. All other system apps remain direct. |
+| **All Apps** | Entire system | `NEPacketTunnelProvider` that follows the server: the default route when it pushes `redirect-gateway` (or no routes), only its pushed routes for a split-tunnel server. |
+| **Selected Apps** | Only user-chosen apps | Native macOS per-app VPN via `NEAppRule`. Unselected apps route direct via standard physical interfaces. |
+| **Apps and Websites** | Chosen apps + specified domains | Native `NEAppRule` for chosen applications plus a helper rule for `SemiProxy`, routing matched Chrome domains. |
+| **Websites Only** | Specified domains only | Dedicated helper `NEAppRule` for `SemiProxy`. All other system apps remain direct. |
 
 ### Per-App On-Demand Routing
 
 Selected-app modes utilize Apple's per-app on-demand behavior: a selected app can automatically trigger the tunnel when it requires network access. When explicitly disconnected, the configuration is paused so selected apps revert to direct network routing without requiring re-authorization.
+
+### Changing Routing While Connected
+
+Nothing is locked while connected; changes are saved at once:
+
+- **Apps**: the new app rules are saved into the running per-app configuration. On macOS 27 they take effect within seconds without a reconnect (tested with a test app that opens a new connection every few seconds: switching it on, off and removing it each took 1–4 seconds). Apple's DTS said in 2022 that earlier versions apply app rules only when the tunnel restarts, so there SemiVPN shows **Reconnect** instead.
+- **Profile and route**: a different server or kind of VPN configuration applies when the tunnel starts again; SemiVPN shows a **Reconnect** button, which stops and restarts the tunnel in a few seconds. Until then the browser proxy and the extension keep following the running tunnel (`applied_routing.json`), so listed websites don't change routes early.
+- **Websites**: go through SemiProxy rather than per-app rules and always change at once.
 
 ---
 
@@ -136,11 +147,11 @@ An embedded accessory application (`com.semivpn.proxy`):
 
 ### 5. SemiVPN App (`App/`)
 
-A SwiftUI management console featuring:
-- Profile management with credential prompts and automatic `.ovpn` scanner.
-- 4-mode routing selector and application picker.
-- Browser domain rule manager with subdomain toggling.
-- Diagnostics view displaying connection logs, tunnel status, and proxy health.
+A SwiftUI app with one window, a menu bar panel and a Settings window, all driven by one shared model (`AppModel`):
+- The connection, the profile and the routing mode, with Reconnect for changes made while connected.
+- A searchable list of the apps or websites that use the VPN, with bulk changes and plain-text import and export.
+- Settings: login item, fail-closed websites, updates, logging, profile management with credential prompts and a `.ovpn` scanner, the browser extension, and diagnostics with Repair VPN Routing.
+- Updates through Sparkle from GitHub Releases.
 
 ---
 
@@ -152,12 +163,12 @@ Located in `ChromeExtension/`, this Manifest V3 extension enables domain-based s
 - **Instant Cache-First UI**: Rendered instantly using cached rules and connection states with asynchronous background revalidation.
 - **On-The-Fly Detection**: Detects the active tab's domain and lets you add it, specify all-subdomains or exact-domain-plus-www scope, or pause/resume routing with one click.
 - **Status Badges**: Real-time toolbar icon badges reflecting domain routing state (`ON`, `OFF`, `DISC`, `BLK`), `!` when the VPN is up but the site does not go through it (see Per-App Rule Cache below), and `UPD` when the extension needs a manual update.
-- **Update Prompts**: The app installs each new extension build into the folder the browser loads it from. A browser runs it after one click on Reload on its Extensions page (an unpacked extension cannot reload its own files); until then the popup, the `UPD` badge, the app's Browser tab and a notification point there.
+- **Update Prompts**: The app installs each new extension build into the folder the browser loads it from. A browser runs it after one click on Reload on its Extensions page (an unpacked extension cannot reload its own files); until then the popup, the `UPD` badge, a notice in the app's window and a notification point there.
 - **Disconnected Behavior**: Listed domains connect directly while the VPN is down (default), or are blocked when the app's fail-closed option is on; in that mode the PAC has no `DIRECT` fallback. Non-browser routing modes get an all-`DIRECT` PAC script. See [ChromeExtension/README.md](ChromeExtension/README.md).
 
 ### Loading the Extension
 
-Chrome on macOS only installs extensions from the Chrome Web Store (or by policy on managed Macs), so the extension is loaded unpacked once per browser profile. In SemiVPN's **Browser** workspace, choose **Set up in Google Chrome…** (or another installed browser) and follow the three steps: open the Extensions page, turn on **Developer mode**, then drag the SemiVPN folder onto the page (or **Load unpacked** with the copied path, `~/Library/Application Support/SemiVPN/ChromeExtension`). The sheet completes when the extension first checks in, and the Browser workspace lists every browser profile running it.
+Chrome on macOS only installs extensions from the Chrome Web Store (or by policy on managed Macs), so the extension is loaded unpacked once per browser profile. In SemiVPN's **Settings → Browser** (the window's Websites list links there), choose **Set up in Google Chrome…** (or another installed browser) and follow the three steps: open the Extensions page, turn on **Developer mode**, then drag the SemiVPN folder onto the page (or **Load unpacked** with the copied path, `~/Library/Application Support/SemiVPN/ChromeExtension`). The sheet completes when the extension first checks in, and Settings → Browser lists every browser profile running it.
 
 After a SemiVPN update, one click on the extension's Reload button (SemiVPN opens its entry on the Extensions page) loads the new version. A browser that runs the extension from another folder (for example the project's `ChromeExtension/` directory during development) does not see the app's copy; SemiVPN then shows the folder to load instead.
 
@@ -277,7 +288,9 @@ Executes 71 unit tests covering:
 - TCP packet framing, buffering, and fragmentation
 - Profile parsing (protocols, remotes, quoting, file inlining, unsupported features) and `PUSH_REPLY`/control-message parsing
 
-End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 49 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (13 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
+End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 49 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (18 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
+
+`Scripts/ui-snapshots.sh` renders every screen with sample data (150 websites, 40 apps), in light and dark mode, into `.build/ui-snapshots` from the Debug build, without touching a running SemiVPN.
 
 ---
 
@@ -285,7 +298,12 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 
 ```
 ├── App/                      # Main SwiftUI application and state managers
-│   ├── ContentView.swift     # 5-section workspace UI (Overview, Routing, Browser, etc.)
+│   ├── AppModel.swift        # State and actions shared by the window, menu bar and Settings
+│   ├── MainPanel.swift       # The window, the menu bar panel and the app/website lists
+│   ├── MenuBar.swift         # Menu bar item and its panel
+│   ├── SettingsView.swift    # Settings window (General, Profiles, Browser, Diagnostics)
+│   ├── AppUpdater.swift      # Sparkle updates from GitHub Releases
+│   ├── UISnapshots.swift     # Debug-only rendering of the screens with sample data
 │   ├── VPNManager.swift      # NETunnelProviderManager controller
 │   ├── ChromeExtensionInstaller.swift # Extension folder, browsers, Extensions page
 │   ├── ExtensionMonitor.swift # Which browsers run which extension build
@@ -303,10 +321,15 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 │   ├── extension-tests.mjs   # Extension update logic with a mocked chrome API
 │   ├── stamp-extension.sh    # Stamps the bundled extension's build fingerprint
 │   ├── notarize.sh           # Submits a build to Apple's notary service
+│   ├── make-dmg.sh           # Installer DMG layout (Packaging/dmg)
+│   ├── sparkle-sign.sh       # Signs Sparkle's helpers with the app's identity
+│   ├── verify-update-signature.swift # Checks an update against the app's key
+│   ├── ui-snapshots.sh       # Renders the screens for design review
 │   └── openssl-*.sh          # Locate, stage and bundle OpenSSL for Xcode
 ├── Shared/                   # Shared configurations and data models
 │   ├── SharedConfig.swift    # Routing modes, domain models, and IPC constants
 │   ├── BrowserExtension.swift # Extension folder, build IDs and browser reports
+│   ├── RoutingListFile.swift # Text format for importing and exporting the lists
 │   └── TunnelSecrets.swift   # Keychain hand-off of profiles and credentials
 ├── Sources/
 │   ├── COpenVPNTLS/          # C OpenSSL 3 shim (memory BIOs, TLS session exporter)
@@ -314,6 +337,7 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 │   └── OpenVPNCLI/           # Headless ovpn-cli profile test executable
 ├── Tests/
 │   └── OpenVPNCoreTests/     # Unit tests for protocol wire formats, crypto, and framing
+├── TestApps/                 # Semi Test A/B/C: show and log the public IP their traffic uses
 └── TunnelProvider/           # NEPacketTunnelProvider system extension
 ```
 
@@ -348,7 +372,7 @@ SemiVPN has been validated byte-for-byte against:
 - **Developer ID (outside the App Store)**: available to individual and organization memberships. The Release configuration uses `packet-tunnel-provider-systemextension`, which Developer ID requires; sign the app and the extension with a Developer ID Application certificate and Developer ID provisioning profiles that include the Network Extensions and System Extension capabilities, then notarize.
 - **Mac App Store**: App Review Guideline 5.4 allows VPN apps only from developers **enrolled as an organization**.
 
-Releases are built, signed with Developer ID, notarized and published as a draft GitHub release by the manually started **Release** workflow; see [docs/RELEASING.md](docs/RELEASING.md) for the one-time certificate, profile and secret setup.
+Releases are built, signed with Developer ID, notarized and published as a draft GitHub release by the manually started **Release** workflow. Publishing a release starts the **Appcast** workflow, which signs its DMG with the update key and attaches `appcast.xml`, the feed installed copies check; see [docs/RELEASING.md](docs/RELEASING.md) for the one-time certificate, profile, update key and secret setup.
 
 All targets build with the Hardened Runtime, which notarization requires.
 
@@ -360,3 +384,4 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### Third-Party Acknowledgments
 - **OpenSSL**: Licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). SemiVPN links against OpenSSL 3 for cryptographic primitives and TLS memory BIOs.
+- **Sparkle**: Licensed under the [MIT License](https://github.com/sparkle-project/Sparkle/blob/2.x/LICENSE). SemiVPN uses Sparkle 2 for updates.

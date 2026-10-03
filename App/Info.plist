@@ -34,5 +34,15 @@
 	<string>SemiVPN scans your Downloads folder for OpenVPN profile (.ovpn) files so you can import them with one click.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/parasetam0l/semi-vpn/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>SPARKLE_PUBLIC_KEY_PENDING</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

@@ -88,6 +88,7 @@ struct SettingsTabView: View {
 
 private struct GeneralSettings: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var updater = AppUpdater.shared
     @State private var launchAtLogin = AppDelegate.shared?.launchAtLoginEnabled ?? false
     @State private var launchAtLoginError: String?
     @State private var detailedLogging = AppLogger.enabled
@@ -103,6 +104,26 @@ private struct GeneralSettings: View {
                     Toggle("Open SemiVPN at login", isOn: Binding(get: { launchAtLogin }, set: setLaunchAtLogin))
                         .toggleStyle(.switch)
                         .labelsHidden()
+                }
+            }
+            SectionBox(title: "Updates", footer: updatesFooter) {
+                SectionRow(first: true) {
+                    Text("Check for updates automatically")
+                    Spacer()
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: { updater.automaticallyChecksForUpdates = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(!updater.isAvailable)
+                }
+                SectionRow {
+                    Text("SemiVPN \(AppUpdater.currentVersion)")
+                    Spacer()
+                    Button("Check Now", action: updater.checkForUpdates)
+                        .controlSize(.small)
+                        .disabled(!updater.canCheckForUpdates)
                 }
             }
             SectionBox(title: "Websites", footer: model.blockWhenDisconnected
@@ -139,6 +160,12 @@ private struct GeneralSettings: View {
                 }
             }
         }
+    }
+
+    private var updatesFooter: String {
+        guard updater.isAvailable else { return "Development builds don’t check for updates." }
+        let last = updater.lastCheck.map { "Last checked " + BrowserExtensionPanel.relative($0) + ". " } ?? ""
+        return last + "Updates come from SemiVPN’s GitHub releases. SemiVPN asks before installing one."
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

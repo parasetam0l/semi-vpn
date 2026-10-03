@@ -88,6 +88,35 @@ copies (the certificate and notary values can be the same, the profiles are
 per app). Then delete the exported `DeveloperID.p12`; the certificate stays
 in your keychain.
 
+### 6. Update signing key (Sparkle)
+
+Installed copies of SemiVPN check `appcast.xml` on the latest published
+release once a day and install an update only if its EdDSA signature
+matches the public key built into the app (`SUPublicEDKey` in
+`project.yml`). Create the key pair once, in the repository folder after a
+build (Xcode downloads Sparkle's tools with the package):
+
+```sh
+.build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys --account semivpn
+```
+
+It saves the private key in your login keychain (keep it: a lost key means
+installed copies can't update) and prints the public key: put it in
+`project.yml` as `SUPublicEDKey`. Then give the private key to the Appcast
+workflow and delete the exported file:
+
+```sh
+.build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys --account semivpn -x sparkle-private.key
+```
+
+```sh
+gh secret set SPARKLE_PRIVATE_KEY < sparkle-private.key
+```
+
+```sh
+rm sparkle-private.key
+```
+
 ## Making a release
 
 1. GitHub → **Actions** → **Release** → **Run workflow**, enter the version
@@ -98,6 +127,11 @@ in your keychain.
    steps and the subjects of the commits since the previous release: add a
    short summary of what changed for users and remove internal entries
    (build, docs).
+3. Publishing starts the **Appcast** workflow (about 2 minutes): it signs the
+   DMG with the update key, checks the signature against the key in the app,
+   and attaches `appcast.xml` with the release notes as published. From then
+   on installed copies offer the update. To redo it (after editing the notes,
+   for example), run Actions → **Appcast** → Run workflow with the tag.
 
 If a step fails, its log says why; the xcodebuild log is attached to the run
 as an artifact, and a notarization failure prints Apple's report.
@@ -110,6 +144,11 @@ as an artifact, and a notarization failure prints Apple's report.
   System Settings → General → Login Items & Extensions → Network Extensions.
   Updates replace the extension without asking again (every build has a
   higher build number).
+- From 1.2.0 on, SemiVPN checks for updates once a day and shows the new
+  version with its release notes; it installs only when they choose
+  **Install Update**, then relaunches. Settings → General has the switch and
+  **Check Now**. Copies older than 1.2.0 have no updater: they update once by
+  hand.
 
 ## Notes
 

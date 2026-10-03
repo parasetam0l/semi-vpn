@@ -25,6 +25,9 @@ settings:
 packages:
   OpenVPNCore:
     path: .
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
 targets:
   semi-vpn:
     type: application
@@ -48,8 +51,17 @@ targets:
         NSDocumentsFolderUsageDescription: "SemiVPN imports the OpenVPN profile (.ovpn) files you select so it can configure your VPN connection."
         NSDownloadsFolderUsageDescription: "SemiVPN scans your Downloads folder for OpenVPN profile (.ovpn) files so you can import them with one click."
         NSDesktopFolderUsageDescription: "SemiVPN scans your Desktop for OpenVPN profile (.ovpn) files so you can import them with one click."
+        # Updates (Sparkle): the feed is attached to the latest published
+        # GitHub release; see docs/RELEASING.md.
+        SUFeedURL: https://github.com/parasetam0l/semi-vpn/releases/latest/download/appcast.xml
+        SUPublicEDKey: SPARKLE_PUBLIC_KEY_PENDING
+        SUEnableAutomaticChecks: true
+        SUScheduledCheckInterval: 86400
+        # Always ask before installing.
+        SUAllowsAutomaticUpdates: false
     dependencies:
       - package: OpenVPNCore
+      - package: Sparkle
       - target: TunnelProvider
         embed: true
         # System extensions must sit in Contents/Library/SystemExtensions.
@@ -89,6 +101,9 @@ targets:
     postBuildScripts:
       - name: Stamp browser extension
         script: '"$SRCROOT/Scripts/stamp-extension.sh"'
+        basedOnDependencyAnalysis: false
+      - name: Sign Sparkle helpers
+        script: '"$SRCROOT/Scripts/sparkle-sign.sh"'
         basedOnDependencyAnalysis: false
   TunnelProvider:
     type: system-extension

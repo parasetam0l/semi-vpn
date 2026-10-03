@@ -1,490 +1,32 @@
 import AppKit
 import SwiftUI
 
-/// SemiVPN's one screen: the connection, its profile and route, and the apps
-/// or websites that use the VPN. The window shows it, and the menu bar panel
-/// shows a condensed version.
-struct MainPanel: View {
-    enum Style { case window, menuBar }
-    let style: Style
+// MARK: - Window
 
-    @EnvironmentObject private var model: AppModel
-    @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
-    @ObservedObject private var systemExtension = SystemExtensionInstaller.shared
-    @State private var showScan = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: style == .window ? 18 : 12) {
-            notices
-            if model.profiles.isEmpty {
-                welcome
-            } else {
-                if style == .window {
-                    header
-                    connectButton
-                } else {
-                    compactHeader
-                }
-                connectionSection
-                if model.routingMode.requiresSelectedApps {
-                    appsSection
-                }
-                if model.routingMode.includesBrowser {
-                    websitesSection
-                }
-            }
-            if style == .menuBar {
-                menuBarFooter
-            }
-        }
-        .padding(style == .window ? 20 : 14)
-        .sheet(isPresented: $showScan) {
-            ProfileScanSheet { urls in model.importProfiles(urls) }
-        }
-    }
-
-    private var locked: Bool { model.configurationLocked }
-
-    // MARK: - Notices
-
-    @ViewBuilder
-    private var notices: some View {
-        SystemExtensionBanner(installer: systemExtension)
-        if extensionMonitor.browserRoutingBroken || model.routingRepairPhase.isBusy {
-            RoutingRepairBanner(
-                blocksListedSites: extensionMonitor.blocksListedSites,
-                phase: model.routingRepairPhase,
-                onRepair: model.repairVPNRouting
-            )
-        }
-        ExtensionUpdateBanner(monitor: extensionMonitor) {
-            SettingsWindowController.shared.show(.browser)
-        }
-    }
-
-    // MARK: - Connection
-
-    private var orbState: OrbState {
-        switch model.displayedStatus {
-        case .connected: return .connected
-        case .connecting, .reasserting, .disconnecting: return .changing
-        default: return .off
-        }
-    }
-
-    private var subtitle: String {
-        guard let profile = model.selectedProfile else { return "Choose a profile" }
-        let meta = model.profileMeta(profile)
-        return "\(meta.displayName) · \(meta.host)"
-    }
-
-    private var header: some View {
-        VStack(spacing: 10) {
-            StatusOrb(state: orbState)
-            VStack(spacing: 3) {
-                Text(model.statusTitle)
-                    .font(.system(size: 20, weight: .semibold))
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 4)
-    }
-
-    private var compactHeader: some View {
-        HStack(spacing: 12) {
-            StatusOrb(state: orbState, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.statusTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 8)
-            Toggle("Connected", isOn: Binding(
-                get: { model.isTunnelActive },
-                set: { $0 ? model.connect() : model.disconnect() }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .disabled(model.selectedProfile == nil || model.displayedStatus == .disconnecting)
-        }
-    }
-
-    @ViewBuilder
-    private var connectButton: some View {
-        let status = model.displayedStatus
-        if status == .connected || status == .reasserting {
-            Button(action: model.disconnect) {
-                Text("Disconnect").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        } else if status == .connecting {
-            Button(action: model.disconnect) {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Cancel")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        } else if status == .disconnecting {
-            Button {} label: {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Disconnecting…")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(true)
-        } else {
-            Button { model.connect() } label: {
-                Text("Connect").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(SemiTheme.brand)
-            .controlSize(.large)
-            .disabled(model.selectedProfile == nil)
-        }
-    }
-
-    private var connectionSection: some View {
-        SectionBox(footer: model.isTunnelActive && style == .window
-                   ? "Disconnect to change the profile or route."
-                   : (style == .window ? model.routingMode.choiceDetail : nil)) {
-            SectionRow(first: true) {
-                Text("Profile")
-                    .lineLimit(1)
-                    .fixedSize()
-                Spacer(minLength: 12)
-                profileMenu
-            }
-            SectionRow {
-                Text("Use VPN for")
-                    .lineLimit(1)
-                    .fixedSize()
-                Spacer(minLength: 12)
-                Picker("Use VPN for", selection: Binding(
-                    get: { model.routingMode },
-                    set: { model.setRoutingMode($0) }
-                )) {
-                    ForEach(SharedConfig.RoutingMode.allCases) { mode in
-                        Text(mode.choiceTitle).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize(horizontal: style == .window, vertical: false)
-                .disabled(locked)
-            }
-        }
-    }
-
-    private var profileMenu: some View {
-        Menu {
-            ForEach(model.profiles, id: \.self) { name in
-                let meta = model.profileMeta(name)
-                Toggle(isOn: Binding(
-                    get: { name == model.selectedProfile },
-                    set: { if $0 { model.chooseProfile(name) } }
-                )) {
-                    Text("\(meta.displayName) — \(meta.host)")
-                }
-            }
-            Divider()
-            Button("Import Profile…") {
-                AppDelegate.shared?.showWindow()
-                model.showProfilePicker()
-            }
-            Button("Manage Profiles…") {
-                SettingsWindowController.shared.show(.profiles)
-            }
-        } label: {
-            Text(model.selectedProfile.map { model.profileMeta($0).displayName } ?? "None")
-        }
-        .fixedSize()
-        .disabled(locked)
-    }
-
-    // MARK: - Apps
-
-    private var appsSection: some View {
-        let apps = model.sortedApps
-        return SectionBox(title: "Apps", footer: locked && style == .window ? "Disconnect to change the apps." : nil) {
-            if apps.isEmpty {
-                SectionRow(first: true) {
-                    Text(style == .window ? "Add the apps that should use the VPN." : "No apps added yet.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
-                ItemRow(first: index == 0, removable: style == .window && !locked,
-                        onRemove: { model.removeApp(app) }) {
-                    Image(nsImage: model.appIcon(app))
-                        .resizable()
-                        .frame(width: 22, height: 22)
-                    Text(app.name)
-                        .lineLimit(1)
-                } trailing: {
-                    Toggle(app.name, isOn: Binding(
-                        get: { model.isAppEnabled(app) },
-                        set: { model.setApp(app, enabled: $0) }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .labelsHidden()
-                    .disabled(locked)
-                }
-            }
-            if style == .window {
-                SectionRow {
-                    Button {
-                        model.showAppPicker()
-                    } label: {
-                        Label("Add Apps…", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(locked)
-                }
-            }
-        }
-    }
-
-    // MARK: - Websites
-
-    private var websitesSection: some View {
-        SectionBox(title: "Websites") {
-            if model.domains.isEmpty {
-                SectionRow(first: true) {
-                    Text(style == .window
-                         ? "Add the websites that should use the VPN, here or from the browser extension."
-                         : "No websites added yet.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            ForEach(Array(model.domains.enumerated()), id: \.element) { index, domain in
-                ItemRow(first: index == 0, removable: style == .window,
-                        onRemove: { model.removeDomain(domain) }) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(domain)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(model.subdomainDomains.contains(domain) ? "and its subdomains" : "and www")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                    }
-                } trailing: {
-                    Toggle(domain, isOn: Binding(
-                        get: { model.isDomainEnabled(domain) },
-                        set: { model.setDomainEnabled(domain, enabled: $0) }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .labelsHidden()
-                    .help(model.isDomainEnabled(domain) ? "Pause \(domain)" : "Resume \(domain)")
-                }
-            }
-            if style == .window {
-                AddWebsiteRow()
-                extensionRow
-            }
-        }
-    }
-
-    /// The browser extension's state, with a way to set it up.
-    private var extensionRow: some View {
-        SectionRow {
-            let active = extensionMonitor.profiles.contains(where: \.isActive)
-            Image(systemName: "puzzlepiece.extension")
-                .foregroundStyle(active ? SemiTheme.green : .secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Browser extension")
-                Text(extensionSummary)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button(extensionMonitor.profiles.isEmpty ? "Set Up…" : "Details…") {
-                SettingsWindowController.shared.show(.browser)
-            }
-            .controlSize(.small)
-        }
-    }
-
-    private var extensionSummary: String {
-        if let active = extensionMonitor.profiles.first(where: \.isActive) {
-            let others = extensionMonitor.profiles.filter(\.isActive).count - 1
-            return "Active in \(active.label)" + (others > 0 ? " and \(others) more" : "")
-        }
-        if !extensionMonitor.profiles.isEmpty { return "Waiting for the browser to open" }
-        return "Needed to route websites"
-    }
-
-    // MARK: - No profile yet
-
-    private var welcome: some View {
-        VStack(spacing: 14) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: style == .window ? 96 : 56, height: style == .window ? 96 : 56)
-            VStack(spacing: 4) {
-                Text("Welcome to SemiVPN")
-                    .font(.system(size: style == .window ? 20 : 15, weight: .semibold))
-                Text("Import an OpenVPN profile (.ovpn) to get started.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            if style == .window {
-                Button {
-                    model.showProfilePicker()
-                } label: {
-                    Text("Import Profile…").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(SemiTheme.brand)
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
-                Button("Find Profiles on This Mac…") {
-                    showScan = true
-                }
-                .buttonStyle(.link)
-            } else {
-                Button("Open SemiVPN") {
-                    MenuBarController.shared?.close()
-                    AppDelegate.shared?.showWindow()
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, style == .window ? 40 : 8)
-    }
-
-    // MARK: - Menu bar
-
-    private var menuBarFooter: some View {
-        HStack(spacing: 4) {
-            Button("Open SemiVPN") {
-                MenuBarController.shared?.close()
-                AppDelegate.shared?.showWindow()
-            }
-            Spacer()
-            Button {
-                MenuBarController.shared?.close()
-                SettingsWindowController.shared.show()
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .help("Settings")
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-            }
-            .help("Quit SemiVPN")
-        }
-        .buttonStyle(.borderless)
-        .padding(.top, 2)
-    }
-}
-
-/// A row with something on the left, a control on the right, and a remove
-/// button that appears while the pointer is over it.
-private struct ItemRow<Leading: View, Trailing: View>: View {
-    let first: Bool
-    let removable: Bool
-    let onRemove: () -> Void
-    @ViewBuilder var leading: Leading
-    @ViewBuilder var trailing: Trailing
-    @State private var hovering = false
-
-    var body: some View {
-        SectionRow(first: first, verticalPadding: 6) {
-            leading
-            Spacer(minLength: 8)
-            if removable && hovering {
-                Button(action: onRemove) {
-                    Image(systemName: "minus.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Remove")
-            }
-            trailing
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .contextMenu {
-            if removable {
-                Button("Remove", action: onRemove)
-            }
-        }
-    }
-}
-
-/// Adds a website: the address, and whether its subdomains are included.
-private struct AddWebsiteRow: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var text = ""
-    @State private var includeSubdomains = true
-    @State private var error: String?
-
-    var body: some View {
-        SectionRow {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    TextField("Add a website, like example.com", text: $text)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(add)
-                        .onChange(of: text) { _, _ in error = nil }
-                    Button("Add", action: add)
-                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                Toggle("Include subdomains", isOn: $includeSubdomains)
-                    .toggleStyle(.checkbox)
-                    .font(.system(size: 11.5))
-                if let error {
-                    Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-    }
-
-    private func add() {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if let message = model.addDomain(text, includeSubdomains: includeSubdomains) {
-            error = message
-        } else {
-            text = ""
-        }
-    }
-}
-
-/// The main window.
+/// The main window: the connection and its choices stay in place at the
+/// top; the list of apps or websites below scrolls, however long it gets.
 struct MainWindowView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        ScrollView {
-            MainPanel(style: .window)
+        VStack(alignment: .leading, spacing: 14) {
+            NoticesView()
+            if model.profiles.isEmpty {
+                WelcomeView(compact: false)
+                    .frame(maxHeight: .infinity)
+            } else {
+                ConnectionHeader(style: .window)
+                ConnectionChoices(style: .window)
+                if model.shownListKind == nil {
+                    AllTrafficNote()
+                } else {
+                    RoutedList()
+                }
+            }
         }
+        .padding(16)
         .frame(width: 400)
-        .frame(minHeight: 480, idealHeight: 660, maxHeight: .infinity)
+        .frame(minHeight: 520, idealHeight: 700, maxHeight: .infinity, alignment: .top)
         .background(SemiTheme.canvas)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -522,25 +64,689 @@ struct MainWindowView: View {
     }
 }
 
-/// The menu bar panel: the main panel, sized to its content up to a limit.
+// MARK: - Menu bar
+
+/// The menu bar panel: the connection and its choices, and how many apps
+/// and websites use the VPN; the lists themselves are in the window.
 struct MenuBarPanel: View {
-    @State private var contentHeight: CGFloat = 320
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        ScrollView {
-            MainPanel(style: .menuBar)
-                .background(GeometryReader { proxy in
-                    Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
-                })
+        VStack(alignment: .leading, spacing: 12) {
+            NoticesView()
+            if model.profiles.isEmpty {
+                WelcomeView(compact: true)
+            } else {
+                ConnectionHeader(style: .menuBar)
+                ConnectionChoices(style: .menuBar)
+                if !model.listKinds.isEmpty {
+                    SectionBox {
+                        ForEach(Array(model.listKinds.enumerated()), id: \.element) { index, kind in
+                            summaryRow(kind, first: index == 0)
+                        }
+                    }
+                }
+            }
+            footer
         }
-        .frame(width: 340, height: min(contentHeight, 600))
-        .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
+        .padding(14)
+        .frame(width: 340)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    private struct ContentHeightKey: PreferenceKey {
-        static var defaultValue: CGFloat = 0
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-            value = max(value, nextValue())
+    private func summaryRow(_ kind: AppModel.ListKind, first: Bool) -> some View {
+        Button {
+            model.listKind = kind
+            MenuBarController.shared?.close()
+            AppDelegate.shared?.showWindow()
+        } label: {
+            SectionRow(first: first) {
+                Image(systemName: kind == .apps ? "square.grid.2x2" : "globe")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                Text(kind == .apps ? "Apps" : "Websites")
+                Spacer()
+                Text(kind == .apps
+                     ? "\(model.enabledAppCount) of \(model.addedApps.count) on"
+                     : "\(model.enabledDomainCount) of \(model.domains.count) on")
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(kind == .apps ? "Show the apps in SemiVPN" : "Show the websites in SemiVPN")
+    }
+
+    private var footer: some View {
+        HStack(spacing: 4) {
+            Button("Open SemiVPN") {
+                MenuBarController.shared?.close()
+                AppDelegate.shared?.showWindow()
+            }
+            Spacer()
+            Button {
+                MenuBarController.shared?.close()
+                SettingsWindowController.shared.show()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .help("Settings")
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Image(systemName: "power")
+            }
+            .help("Quit SemiVPN")
+        }
+        .buttonStyle(.borderless)
+    }
+}
+
+// MARK: - Connection
+
+/// The window and the menu bar panel differ only in their controls.
+enum PanelStyle {
+    case window, menuBar
+}
+
+/// Warnings that need the user: the network extension's approval, browser
+/// traffic outside the VPN, an outdated browser extension.
+struct NoticesView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
+    @ObservedObject private var systemExtension = SystemExtensionInstaller.shared
+
+    var body: some View {
+        SystemExtensionBanner(installer: systemExtension)
+        if extensionMonitor.browserRoutingBroken || model.routingRepairPhase.isBusy {
+            RoutingRepairBanner(
+                blocksListedSites: extensionMonitor.blocksListedSites,
+                phase: model.routingRepairPhase,
+                onRepair: model.repairVPNRouting
+            )
+        }
+        ExtensionUpdateBanner(monitor: extensionMonitor) {
+            SettingsWindowController.shared.show(.browser)
+        }
+    }
+}
+
+/// The status, the profile in use and the way to connect or disconnect.
+struct ConnectionHeader: View {
+    let style: PanelStyle
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            StatusOrb(state: orbState, size: style == .window ? 46 : 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.statusTitle)
+                    .font(.system(size: style == .window ? 16 : 14, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 8)
+            if style == .window {
+                connectButton
+            } else {
+                Toggle("Connected", isOn: Binding(
+                    get: { model.isTunnelActive },
+                    set: { $0 ? model.connect() : model.disconnect() }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .disabled(model.selectedProfile == nil || model.displayedStatus == .disconnecting)
+            }
+        }
+    }
+
+    private var orbState: OrbState {
+        switch model.displayedStatus {
+        case .connected: return .connected
+        case .connecting, .reasserting, .disconnecting: return .changing
+        default: return .off
+        }
+    }
+
+    private var subtitle: String {
+        guard let profile = model.selectedProfile else { return "Choose a profile" }
+        let meta = model.profileMeta(profile)
+        return "\(meta.displayName) · \(meta.host)"
+    }
+
+    @ViewBuilder
+    private var connectButton: some View {
+        switch model.displayedStatus {
+        case .connected, .reasserting:
+            Button("Disconnect", role: .destructive, action: model.disconnect)
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .controlSize(.large)
+        case .connecting:
+            Button(action: model.disconnect) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Cancel")
+                }
+            }
+            .controlSize(.large)
+        case .disconnecting:
+            Button {} label: {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Disconnecting…")
+                }
+            }
+            .controlSize(.large)
+            .disabled(true)
+        default:
+            Button { model.connect() } label: {
+                Text("Connect").padding(.horizontal, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(SemiTheme.brand)
+            .controlSize(.large)
+            .disabled(model.selectedProfile == nil)
+        }
+    }
+}
+
+/// The profile and what uses the VPN.
+struct ConnectionChoices: View {
+    let style: PanelStyle
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        SectionBox(footer: style == .window
+                   ? (model.isTunnelActive ? "Disconnect to change the profile or route." : model.routingMode.choiceDetail)
+                   : nil) {
+            SectionRow(first: true) {
+                Text("Profile")
+                    .lineLimit(1)
+                    .fixedSize()
+                Spacer(minLength: 12)
+                profileMenu
+            }
+            SectionRow {
+                Text("Use VPN for")
+                    .lineLimit(1)
+                    .fixedSize()
+                Spacer(minLength: 12)
+                Picker("Use VPN for", selection: Binding(
+                    get: { model.routingMode },
+                    set: { model.setRoutingMode($0) }
+                )) {
+                    ForEach(SharedConfig.RoutingMode.allCases) { mode in
+                        Text(mode.choiceTitle).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize(horizontal: style == .window, vertical: false)
+                .disabled(model.configurationLocked)
+            }
+        }
+    }
+
+    private var profileMenu: some View {
+        Menu {
+            ForEach(model.profiles, id: \.self) { name in
+                let meta = model.profileMeta(name)
+                Toggle(isOn: Binding(
+                    get: { name == model.selectedProfile },
+                    set: { if $0 { model.chooseProfile(name) } }
+                )) {
+                    Text("\(meta.displayName) — \(meta.host)")
+                }
+            }
+            Divider()
+            Button("Import Profile…") {
+                MenuBarController.shared?.close()
+                AppDelegate.shared?.showWindow()
+                model.showProfilePicker()
+            }
+            Button("Manage Profiles…") {
+                MenuBarController.shared?.close()
+                SettingsWindowController.shared.show(.profiles)
+            }
+        } label: {
+            Text(model.selectedProfile.map { model.profileMeta($0).displayName } ?? "None")
+        }
+        .fixedSize()
+        .disabled(model.configurationLocked)
+    }
+}
+
+/// Shown instead of a list in All Apps mode.
+private struct AllTrafficNote: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "globe")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("All traffic from this Mac uses the VPN.")
+                .font(.system(size: 13, weight: .medium))
+            Text("To choose apps or websites instead, change “Use VPN for”.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Lists
+
+/// The apps or websites that use the VPN: a switcher when the mode uses
+/// both, a field that searches the list (and adds a website), the list,
+/// and a footer with counts and actions on all of them.
+private struct RoutedList: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var selection: Set<String> = []
+    @State private var addError: String?
+
+    private var kind: AppModel.ListKind { model.shownListKind ?? .websites }
+    private var query: String { model.listSearch }
+    private var locked: Bool { kind == .apps && model.configurationLocked }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if model.listKinds.count > 1 {
+                Picker("List", selection: $model.listKind) {
+                    Text("Apps \(model.addedApps.count)").tag(AppModel.ListKind.apps)
+                    Text("Websites \(model.domains.count)").tag(AppModel.ListKind.websites)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+            }
+            searchField
+            if let candidate = addCandidate {
+                addRow(candidate)
+            }
+            if let addError {
+                Text(addError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            list
+            footer
+        }
+        .onChange(of: model.listKind) { _, _ in
+            selection = []
+            model.listSearch = ""
+            addError = nil
+        }
+    }
+
+    // MARK: Search and add
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField(kind == .apps ? "Search apps" : "Search or add a website", text: $model.listSearch)
+                    .textFieldStyle(.plain)
+                    .onSubmit(submit)
+                    .onChange(of: model.listSearch) { _, _ in addError = nil }
+                if !query.isEmpty {
+                    Button {
+                        model.listSearch = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SemiTheme.panel))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+            if kind == .apps {
+                Button {
+                    model.showAppPicker()
+                } label: {
+                    Label("Add Apps…", systemImage: "plus")
+                }
+                .disabled(locked)
+            }
+        }
+    }
+
+    /// A website the search text names that isn't in the list yet.
+    private var addCandidate: String? {
+        guard kind == .websites, query.contains("."),
+              let domain = SharedConfig.routingDomain(query),
+              !model.domains.contains(domain) else { return nil }
+        return domain
+    }
+
+    private func addRow(_ domain: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundStyle(SemiTheme.brand)
+                Text("Add \(domain)")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Only This Site") { add(domain, includeSubdomains: false) }
+                    .help("\(domain) and www.\(domain)")
+                Button("With Subdomains") { add(domain, includeSubdomains: true) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(SemiTheme.brand)
+                    .help("\(domain) and every *.\(domain) (Return)")
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SemiTheme.brand.opacity(0.10)))
+    }
+
+    private func submit() {
+        if let candidate = addCandidate {
+            add(candidate, includeSubdomains: true)
+        }
+    }
+
+    private func add(_ domain: String, includeSubdomains: Bool) {
+        if let message = model.addDomain(domain, includeSubdomains: includeSubdomains) {
+            addError = message
+        } else {
+            model.listSearch = ""
+            selection = [domain]
+        }
+    }
+
+    // MARK: List
+
+    private var filteredApps: [AppEntry] {
+        let apps = model.sortedApps
+        let text = query.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return apps }
+        return apps.filter { $0.name.localizedCaseInsensitiveContains(text) || $0.bundleIdentifier.localizedCaseInsensitiveContains(text) }
+    }
+
+    private var filteredDomains: [String] {
+        let text = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !text.isEmpty else { return model.domains }
+        let needle = SharedConfig.routingDomain(text) ?? text
+        return model.domains.filter { $0.contains(needle) || $0.contains(text) }
+    }
+
+    private var list: some View {
+        List(selection: $selection) {
+            if kind == .apps {
+                ForEach(filteredApps) { app in
+                    AppListRow(app: app, locked: locked) { request(remove: [app.bundleIdentifier]) }
+                        .tag(app.bundleIdentifier)
+                }
+            } else {
+                ForEach(filteredDomains, id: \.self) { domain in
+                    WebsiteListRow(domain: domain) { request(remove: [domain]) }
+                        .tag(domain)
+                }
+            }
+        }
+        .listStyle(.inset(alternatesRowBackgrounds: false))
+        .scrollContentBackground(.hidden)
+        .background(SemiTheme.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+        .overlay { emptyState }
+        .frame(minHeight: 160, maxHeight: .infinity)
+        .contextMenu(forSelectionType: String.self) { items in
+            if !items.isEmpty {
+                Button("Turn On") { setEnabled(items, true) }
+                    .disabled(locked)
+                Button("Turn Off") { setEnabled(items, false) }
+                    .disabled(locked)
+                Divider()
+                Button(items.count == 1 ? "Remove…" : "Remove \(items.count)…", role: .destructive) {
+                    request(remove: items)
+                }
+                .disabled(locked)
+            }
+        }
+        .onDeleteCommand {
+            request(remove: selection)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        let isEmpty = kind == .apps ? model.addedApps.isEmpty : model.domains.isEmpty
+        let noMatches = kind == .apps ? filteredApps.isEmpty : filteredDomains.isEmpty
+        if isEmpty {
+            VStack(spacing: 6) {
+                Text(kind == .apps ? "No apps yet" : "No websites yet")
+                    .font(.system(size: 13, weight: .medium))
+                Text(kind == .apps
+                     ? "Add the apps that should use the VPN, or import a list."
+                     : "Type a website above, add one from the browser extension, or import a list.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(24)
+        } else if noMatches && addCandidate == nil {
+            Text("No matches for “\(query)”")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Footer
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Text(summary)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Menu {
+                Button("Turn All On") { setEnabled(allIdentifiers, true) }
+                    .disabled(locked)
+                Button("Turn All Off") { setEnabled(allIdentifiers, false) }
+                    .disabled(locked)
+                Divider()
+                if kind == .apps {
+                    Button("Import Apps…", action: model.importApps)
+                        .disabled(locked)
+                    Button("Export Apps…", action: model.exportApps)
+                        .disabled(model.addedApps.isEmpty)
+                } else {
+                    Button("Import Websites…", action: model.importWebsites)
+                    Button("Export Websites…", action: model.exportWebsites)
+                        .disabled(model.domains.isEmpty)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+        }
+    }
+
+    private var summary: String {
+        guard !allIdentifiers.isEmpty else { return "" }
+        let counts = kind == .apps
+            ? "\(model.enabledAppCount) of \(model.addedApps.count) on"
+            : "\(model.enabledDomainCount) of \(model.domains.count) on"
+        let selected = selection.count > 1 ? " · \(selection.count) selected" : ""
+        let lockedNote = locked ? " · disconnect to change" : ""
+        return counts + selected + lockedNote
+    }
+
+    private var allIdentifiers: Set<String> {
+        kind == .apps ? Set(model.addedApps.keys) : Set(model.domains)
+    }
+
+    private func setEnabled(_ items: Set<String>, _ enabled: Bool) {
+        if kind == .apps {
+            model.setApps(items, enabled: enabled)
+        } else {
+            model.setDomainsEnabled(items, enabled: enabled)
+        }
+    }
+
+    private func request(remove items: Set<String>) {
+        guard !items.isEmpty, !locked else { return }
+        let kind = kind
+        model.confirmRemoval(kind, items) {
+            if kind == .apps {
+                model.removeApps(items)
+            } else {
+                model.removeDomains(items)
+            }
+            selection.subtract(items)
+        }
+    }
+}
+
+/// One app: icon, name, and its switch.
+private struct AppListRow: View {
+    let app: AppEntry
+    let locked: Bool
+    let onRemove: () -> Void
+    @EnvironmentObject private var model: AppModel
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: model.appIcon(app))
+                .resizable()
+                .frame(width: 18, height: 18)
+            Text(app.name)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            if hovering && !locked {
+                RemoveButton(action: onRemove)
+            }
+            Toggle(app.name, isOn: Binding(
+                get: { model.isAppEnabled(app) },
+                set: { model.setApp(app, enabled: $0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .labelsHidden()
+            .disabled(locked)
+        }
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+}
+
+/// One website: the domain, whether subdomains are included, its switch.
+private struct WebsiteListRow: View {
+    let domain: String
+    let onRemove: () -> Void
+    @EnvironmentObject private var model: AppModel
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(domain)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if model.subdomainDomains.contains(domain) {
+                Text("+ subdomains")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            Spacer(minLength: 6)
+            if hovering {
+                RemoveButton(action: onRemove)
+            }
+            Toggle(domain, isOn: Binding(
+                get: { model.isDomainEnabled(domain) },
+                set: { model.setDomainEnabled(domain, enabled: $0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .labelsHidden()
+        }
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+}
+
+private struct RemoveButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "minus.circle.fill")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help("Remove…")
+    }
+}
+
+// MARK: - No profile yet
+
+struct WelcomeView: View {
+    let compact: Bool
+    @EnvironmentObject private var model: AppModel
+    @State private var showScan = false
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: compact ? 56 : 96, height: compact ? 56 : 96)
+            VStack(spacing: 4) {
+                Text("Welcome to SemiVPN")
+                    .font(.system(size: compact ? 15 : 20, weight: .semibold))
+                Text("Import an OpenVPN profile (.ovpn) to get started.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            if compact {
+                Button("Open SemiVPN") {
+                    MenuBarController.shared?.close()
+                    AppDelegate.shared?.showWindow()
+                }
+            } else {
+                Button {
+                    model.showProfilePicker()
+                } label: {
+                    Text("Import Profile…").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(SemiTheme.brand)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+                Button("Find Profiles on This Mac…") {
+                    showScan = true
+                }
+                .buttonStyle(.link)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, compact ? 8 : 40)
+        .sheet(isPresented: $showScan) {
+            ProfileScanSheet { urls in model.importProfiles(urls) }
         }
     }
 }

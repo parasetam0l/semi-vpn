@@ -27,11 +27,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var blockWhenDisconnected = false
     @Published private(set) var connecting = false
     @Published private(set) var routingRepairPhase: RoutingRepairPhase = .idle
+    /// The list the window shows when the mode uses both.
+    @Published var listKind: ListKind = .websites
+    /// What the window's list is filtered by.
+    @Published var listSearch = ""
     @Published private(set) var diagnostics = Diagnostics()
 
     /// Presented by the window.
     @Published var connectError: String?
     @Published var credentialEditor: VPNManager.CredentialRequest?
+
+    enum ListKind: Hashable {
+        case apps, websites
+    }
 
     struct Diagnostics: Equatable {
         var tunnelRegistered = false
@@ -355,13 +363,71 @@ final class AppModel: ObservableObject {
         saveCurrentSelection()
     }
 
-    func removeApp(_ app: AppEntry) {
+    /// The lists the current mode uses: apps, websites, or both.
+    var listKinds: [ListKind] {
+        var kinds: [ListKind] = []
+        if routingMode.requiresSelectedApps { kinds.append(.apps) }
+        if routingMode.includesBrowser { kinds.append(.websites) }
+        return kinds
+    }
+
+    /// The list on screen: the chosen one when the mode uses it.
+    var shownListKind: ListKind? {
+        listKinds.contains(listKind) ? listKind : listKinds.first
+    }
+
+    var enabledAppCount: Int { addedApps.values.filter(isAppEnabled).count }
+    var enabledDomainCount: Int { domains.count - inactiveDomains.intersection(domains).count }
+
+    func setApps(_ identifiers: Set<String>, enabled: Bool) {
         guard !configurationLocked else { return }
-        addedApps.removeValue(forKey: app.bundleIdentifier)
-        selectedApps.remove(app.bundleIdentifier)
-        selectedApps.remove(app.signingIdentifier)
+        for identifier in identifiers {
+            guard let app = addedApps[identifier] else { continue }
+            if enabled {
+                selectedApps.insert(app.bundleIdentifier)
+            } else {
+                selectedApps.remove(app.bundleIdentifier)
+                selectedApps.remove(app.signingIdentifier)
+            }
+        }
         saveCurrentSelection()
-        AppLogger.log("removed app \(app.name)")
+    }
+
+    func removeApps(_ identifiers: Set<String>) {
+        guard !configurationLocked else { return }
+        for identifier in identifiers {
+            guard let app = addedApps.removeValue(forKey: identifier) else { continue }
+            selectedApps.remove(app.bundleIdentifier)
+            selectedApps.remove(app.signingIdentifier)
+        }
+        saveCurrentSelection()
+        AppLogger.log("removed \(identifiers.count) app(s)")
+    }
+
+    /// Asks before removing apps or websites; `identifiers` are bundle
+    /// identifiers or domains.
+    func confirmRemoval(_ kind: ListKind, _ identifiers: Set<String>, then remove: @escaping () -> Void) {
+        guard !identifiers.isEmpty else { return }
+        let names = identifiers
+            .map { kind == .apps ? (addedApps[$0]?.name ?? $0) : $0 }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let noun = kind == .apps ? (names.count == 1 ? "app" : "apps") : (names.count == 1 ? "website" : "websites")
+        let alert = NSAlert()
+        if names.count == 1 {
+            alert.messageText = "Remove “\(names[0])”?"
+            alert.informativeText = "It stops using the VPN. You can add it again later."
+        } else {
+            alert.messageText = "Remove \(names.count) \(noun)?"
+            let shown = names.prefix(5).joined(separator: ", ")
+            alert.informativeText = shown + (names.count > 5 ? " and \(names.count - 5) more" : "")
+                + " stop using the VPN. You can add them again later."
+        }
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        Self.run(alert) { confirmed in
+            if confirmed { remove() }
+        }
     }
 
     func appIcon(_ app: AppEntry) -> NSImage {
@@ -380,19 +446,9 @@ final class AppModel: ObservableObject {
         Self.present(panel) { [weak self] response in
             guard let self, response == .OK else { return }
             for url in panel.urls {
-                guard let bundle = Bundle(url: url),
-                      let identifier = bundle.bundleIdentifier else { continue }
-                let name = (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
-                    ?? (bundle.infoDictionary?["CFBundleName"] as? String)
-                    ?? url.deletingPathExtension().lastPathComponent
-                self.addedApps[identifier] = AppEntry(
-                    name: name,
-                    bundleIdentifier: identifier,
-                    signingIdentifier: identifier,
-                    path: url.path,
-                    designatedRequirement: AppCodeSignature.designatedRequirement(for: url)
-                )
-                self.selectedApps.insert(identifier)
+                guard let entry = Self.appEntry(at: url) else { continue }
+                self.addedApps[entry.bundleIdentifier] = entry
+                self.selectedApps.insert(entry.bundleIdentifier)
             }
             self.saveCurrentSelection()
         }
@@ -420,16 +476,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func removeDomain(_ domain: String) {
-        guard !isPreview else { return }
-        do {
-            apply(try SharedConfig.removeDomain(domain))
-            AppLogger.log("removed domain rule: \(domain)")
-        } catch {
-            AppLogger.log("removing domain rule failed: \(error.localizedDescription)")
-        }
-    }
-
     func setDomainEnabled(_ domain: String, enabled: Bool) {
         guard !isPreview else { return }
         do {
@@ -438,6 +484,18 @@ final class AppModel: ObservableObject {
         } catch {
             AppLogger.log("updating domain rule failed: \(error.localizedDescription)")
         }
+    }
+
+    func setDomainsEnabled(_ domains: Set<String>, enabled: Bool) {
+        guard !isPreview, !domains.isEmpty else { return }
+        apply(SharedConfig.setDomainsEnabled(Array(domains), enabled: enabled))
+        AppLogger.log("\(domains.count) domain rule(s) \(enabled ? "enabled" : "paused")")
+    }
+
+    func removeDomains(_ domains: Set<String>) {
+        guard !isPreview, !domains.isEmpty else { return }
+        apply(SharedConfig.removeDomains(Array(domains)))
+        AppLogger.log("removed \(domains.count) domain rule(s)")
     }
 
     func setBlockWhenDisconnected(_ enabled: Bool) {
@@ -451,6 +509,148 @@ final class AppModel: ObservableObject {
         subdomainDomains = Set(configuration.subdomainDomains)
         inactiveDomains = Set(configuration.inactiveDomains)
         blockWhenDisconnected = configuration.blockWhenDisconnected
+    }
+
+    // MARK: - Import and export
+
+    func exportWebsites() {
+        let rules = domains.map {
+            SharedConfig.DomainRule(domain: $0, includeSubdomains: subdomainDomains.contains($0), enabled: isDomainEnabled($0))
+        }
+        save(RoutingListFile.text(forWebsites: rules), suggestedName: "SemiVPN Websites.txt", title: "Export Websites")
+    }
+
+    func importWebsites() {
+        guard !isPreview else { return }
+        openListFile(title: "Import Websites") { [weak self] text in
+            guard let self else { return }
+            let parsed = RoutingListFile.websites(from: text)
+            let result = SharedConfig.addDomains(parsed.entries)
+            self.apply(result.configuration)
+            AppLogger.log("imported \(result.added.count) domain rule(s)")
+            Self.showImportSummary(
+                added: result.added.count, noun: "website",
+                alreadyListed: Set(parsed.entries.map(\.domain)).count - result.added.count,
+                problems: parsed.rejected.map { "Line \($0.line): \($0.text)" }
+            )
+        }
+    }
+
+    func exportApps() {
+        let lines = sortedApps.map { RoutingListFile.AppLine(identifier: $0.bundleIdentifier, enabled: isAppEnabled($0)) }
+        save(RoutingListFile.text(forApps: lines), suggestedName: "SemiVPN Apps.txt", title: "Export Apps")
+    }
+
+    func importApps() {
+        guard !isPreview, !configurationLocked else { return }
+        openListFile(title: "Import Apps") { [weak self] text in
+            guard let self else { return }
+            let parsed = RoutingListFile.apps(from: text)
+            var problems = parsed.rejected.map { "Line \($0.line): \($0.text)" }
+            var added = 0
+            var alreadyListed = 0
+            for line in parsed.entries {
+                let url = line.identifier.hasPrefix("/")
+                    ? URL(fileURLWithPath: line.identifier)
+                    : NSWorkspace.shared.urlForApplication(withBundleIdentifier: line.identifier)
+                guard let url, let entry = Self.appEntry(at: url) else {
+                    problems.append("Not installed: \(line.identifier)")
+                    continue
+                }
+                if self.addedApps[entry.bundleIdentifier] != nil {
+                    alreadyListed += 1
+                    continue
+                }
+                self.addedApps[entry.bundleIdentifier] = entry
+                if line.enabled { self.selectedApps.insert(entry.bundleIdentifier) }
+                added += 1
+            }
+            self.saveCurrentSelection()
+            AppLogger.log("imported \(added) app(s)")
+            Self.showImportSummary(added: added, noun: "app", alreadyListed: alreadyListed, problems: problems)
+        }
+    }
+
+    private static func appEntry(at url: URL) -> AppEntry? {
+        guard let bundle = Bundle(url: url), let identifier = bundle.bundleIdentifier else { return nil }
+        let name = (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
+            ?? (bundle.infoDictionary?["CFBundleName"] as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+        return AppEntry(
+            name: name,
+            bundleIdentifier: identifier,
+            signingIdentifier: identifier,
+            path: url.path,
+            designatedRequirement: AppCodeSignature.designatedRequirement(for: url)
+        )
+    }
+
+    private func save(_ text: String, suggestedName: String, title: String) {
+        guard !isPreview else { return }
+        let panel = NSSavePanel()
+        panel.title = title
+        panel.nameFieldStringValue = suggestedName
+        panel.allowedContentTypes = [.plainText]
+        let write: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "SemiVPN Couldn’t Save the List"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+        if let window = NSApp.keyWindow, !(window is NSPanel) {
+            panel.beginSheetModal(for: window, completionHandler: write)
+        } else {
+            write(panel.runModal())
+        }
+    }
+
+    private func openListFile(title: String, read: @escaping (String) -> Void) {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.message = "Choose a text file with one entry per line, such as one exported from SemiVPN."
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.plainText, .text]
+        Self.present(panel) { response in
+            guard response == .OK, let url = panel.url else { return }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                Self.showImportSummary(added: 0, noun: "entry", alreadyListed: 0, problems: ["The file isn’t a UTF-8 text file."])
+                return
+            }
+            read(text)
+        }
+    }
+
+    private static func showImportSummary(added: Int, noun: String, alreadyListed: Int, problems: [String]) {
+        let alert = NSAlert()
+        alert.messageText = added == 1 ? "Added 1 \(noun)" : "Added \(added) \(noun)s"
+        var details: [String] = []
+        if alreadyListed > 0 {
+            details.append(alreadyListed == 1 ? "1 was already in the list." : "\(alreadyListed) were already in the list.")
+        }
+        if !problems.isEmpty {
+            details.append("Skipped:\n" + problems.prefix(10).joined(separator: "\n")
+                + (problems.count > 10 ? "\n… and \(problems.count - 10) more" : ""))
+        }
+        alert.informativeText = details.joined(separator: "\n\n")
+        if added == 0 && !problems.isEmpty { alert.alertStyle = .warning }
+        run(alert) { _ in }
+    }
+
+    /// Shows an alert as a sheet on the key window, or as a dialog; calls
+    /// back with whether the first button was chosen.
+    private static func run(_ alert: NSAlert, completion: @escaping (Bool) -> Void) {
+        if let window = NSApp.keyWindow, !(window is NSPanel), window.attachedSheet == nil {
+            alert.beginSheetModal(for: window) { completion($0 == .alertFirstButtonReturn) }
+        } else {
+            completion(alert.runModal() == .alertFirstButtonReturn)
+        }
     }
 
     // MARK: - Connection
@@ -658,6 +858,8 @@ final class AppModel: ObservableObject {
         var domains: [(name: String, subdomains: Bool, enabled: Bool)] = []
         var blockWhenDisconnected = false
         var diagnostics = Diagnostics()
+        var listKind: ListKind = .websites
+        var listSearch = ""
     }
 
     /// Sample data for UI snapshots; touches nothing on the system.
@@ -678,6 +880,8 @@ final class AppModel: ObservableObject {
         inactiveDomains = Set(preview.domains.filter { !$0.enabled }.map(\.name))
         blockWhenDisconnected = preview.blockWhenDisconnected
         diagnostics = preview.diagnostics
+        listKind = preview.listKind
+        listSearch = preview.listSearch
     }
     #endif
 }
@@ -688,7 +892,7 @@ extension SharedConfig.RoutingMode {
         switch self {
         case .allApps: return "All Apps"
         case .selectedAppsOnly: return "Selected Apps"
-        case .selectedAppsAndBrowser: return "Selected Apps and Websites"
+        case .selectedAppsAndBrowser: return "Apps and Websites"
         case .browserOnly: return "Websites Only"
         }
     }

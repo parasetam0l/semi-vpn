@@ -21,27 +21,39 @@ enum UISnapshots {
     private struct Screen {
         let name: String
         let width: CGFloat
+        /// Nil: as tall as the content wants.
+        var height: CGFloat? = nil
         let view: @MainActor () -> AnyView
     }
 
     @MainActor
     private static var screens: [Screen] {
         [
-            Screen(name: "window-connected-websites", width: 400) {
+            Screen(name: "window-connected-websites", width: 400, height: 760) {
                 window(AppModel(preview: sample(status: .connected, mode: .browserOnly)))
             },
-            Screen(name: "window-apps-and-websites", width: 400) {
-                window(AppModel(preview: sample(status: .disconnected, mode: .selectedAppsAndBrowser)))
+            Screen(name: "window-apps", width: 400, height: 760) {
+                window(AppModel(preview: sample(status: .disconnected, mode: .selectedAppsAndBrowser, list: .apps)))
             },
-            Screen(name: "window-connecting-all-apps", width: 400) {
+            Screen(name: "window-add-website", width: 400, height: 760) {
+                var preview = sample(status: .disconnected, mode: .selectedAppsAndBrowser)
+                preview.listSearch = "status.example"
+                return window(AppModel(preview: preview))
+            },
+            Screen(name: "window-connecting-all-apps", width: 400, height: 520) {
                 window(AppModel(preview: sample(status: .connecting, mode: .allApps)))
             },
-            Screen(name: "window-welcome", width: 400) {
+            Screen(name: "window-empty-list", width: 400, height: 560) {
+                var preview = sample(status: .disconnected, mode: .browserOnly)
+                preview.domains = []
+                return window(AppModel(preview: preview))
+            },
+            Screen(name: "window-welcome", width: 400, height: 560) {
                 window(AppModel(preview: AppModel.Preview()))
             },
             Screen(name: "menubar-connected", width: 340) {
-                AnyView(MainPanel(style: .menuBar)
-                    .environmentObject(AppModel(preview: sample(status: .connected, mode: .browserOnly))))
+                AnyView(MenuBarPanel()
+                    .environmentObject(AppModel(preview: sample(status: .connected, mode: .selectedAppsAndBrowser))))
             },
             Screen(name: "notices", width: 400) {
                 AnyView(VStack(spacing: 12) {
@@ -70,31 +82,45 @@ enum UISnapshots {
 
     @MainActor
     private static func window(_ model: AppModel) -> AnyView {
-        AnyView(MainPanel(style: .window).environmentObject(model))
+        AnyView(MainWindowView().environmentObject(model))
     }
 
-    private static func sample(status: NEVPNStatus, mode: SharedConfig.RoutingMode) -> AppModel.Preview {
+    private static func sample(status: NEVPNStatus, mode: SharedConfig.RoutingMode,
+                               list: AppModel.ListKind = .websites) -> AppModel.Preview {
         var preview = AppModel.Preview()
         preview.status = status
         preview.routingMode = mode
+        preview.listKind = list
         preview.profiles = [
             ("gobritanya.ovpn", .init(displayName: "gobritanya", host: "172.104.229.229", protocolName: "OpenVPN UDP")),
             ("nyks-office.ovpn", .init(displayName: "nyks-office", host: "srv.nyks.net", protocolName: "OpenVPN TCP")),
         ]
-        preview.apps = [
-            (AppEntry(name: "Safari", bundleIdentifier: "com.apple.Safari", signingIdentifier: "com.apple.Safari",
-                      path: "/Applications/Safari.app"), true),
-            (AppEntry(name: "Mail", bundleIdentifier: "com.apple.mail", signingIdentifier: "com.apple.mail",
-                      path: "/System/Applications/Mail.app"), true),
-            (AppEntry(name: "Terminal", bundleIdentifier: "com.apple.Terminal", signingIdentifier: "com.apple.Terminal",
-                      path: "/System/Applications/Utilities/Terminal.app"), false),
-        ]
-        preview.domains = [
-            ("icanhazip.com", true, true),
-            ("whatismyipaddress.com", true, true),
-            ("srv.nyks.net", false, true),
-            ("panel.galyata.com", false, false),
-        ]
+        // Up to 40 installed apps, for real names and icons.
+        let folders = ["/System/Applications", "/Applications"]
+        let apps = folders.flatMap { folder in
+            ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
+                .filter { $0.hasSuffix(".app") }
+                .map { folder + "/" + $0 }
+        }
+        preview.apps = apps.sorted().prefix(40).enumerated().compactMap { index, path in
+            guard let identifier = Bundle(path: path)?.bundleIdentifier else { return nil }
+            let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            return (AppEntry(name: name, bundleIdentifier: identifier, signingIdentifier: identifier, path: path),
+                    index % 7 != 3)
+        }
+        // 150 websites.
+        let words = ["alpha", "beta", "cloud", "delta", "echo", "files", "git", "home", "intra", "jira",
+                     "kube", "login", "mail", "news", "office", "panel", "queue", "reports", "status", "tickets"]
+        let suffixes = ["com", "net", "io", "org", "dev", "co.uk", "com.tr"]
+        var domains: [(String, Bool, Bool)] = [("icanhazip.com", true, true), ("ip-adresim.net", true, true),
+                                              ("panel.galyata.com", false, false), ("srv.nyks.net", false, true)]
+        var index = 0
+        while domains.count < 150 {
+            let name = words[index % words.count] + (index >= words.count ? "\(index / words.count)" : "")
+            domains.append(("\(name).example-\(index % 9).\(suffixes[index % suffixes.count])", index % 3 == 0, index % 11 != 5))
+            index += 1
+        }
+        preview.domains = domains.sorted { $0.0 < $1.0 }
         preview.diagnostics = .init(tunnelRegistered: true, vpnConfigSaved: true, perAppConfigSaved: true)
         return preview
     }
@@ -107,14 +133,14 @@ enum UISnapshots {
         for screen in screens {
             for (suffix, appearance) in appearances {
                 let url = folder.appendingPathComponent("\(screen.name)-\(suffix).png")
-                save(screen.view(), width: screen.width, appearance: appearance, to: url)
+                save(screen.view(), width: screen.width, height: screen.height, appearance: appearance, to: url)
             }
         }
         print("Rendered \(screens.count * appearances.count) images into \(folder.path)")
     }
 
     @MainActor
-    private static func save(_ view: AnyView, width: CGFloat, appearance: NSAppearance.Name, to url: URL) {
+    private static func save(_ view: AnyView, width: CGFloat, height: CGFloat?, appearance: NSAppearance.Name, to url: URL) {
         let root = view
             .frame(width: width)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -128,7 +154,7 @@ enum UISnapshots {
                                     styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: appearance)
         window.contentView = host
-        let size = host.fittingSize
+        let size = NSSize(width: width, height: height ?? host.fittingSize.height)
         window.setContentSize(size)
         host.frame = NSRect(origin: .zero, size: size)
         host.layoutSubtreeIfNeeded()

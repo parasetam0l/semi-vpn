@@ -26,7 +26,7 @@ struct BrowserExtensionPanel: View {
             if monitor.profiles.isEmpty {
                 Text(monitor.isPrepared
                      ? "Not detected in a browser yet. Finish the setup, or open the browser if it is closed."
-                     : "Routes the domains you list through SemiVPN in Chrome, Edge, Brave and other Chromium browsers. Setup takes about a minute; updates install themselves.")
+                     : "Routes the domains you list through SemiVPN in Chrome, Edge, Brave and other Chromium browsers. Setup takes about a minute.")
                     .font(.caption)
                     .foregroundStyle(SemiTheme.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -96,7 +96,6 @@ struct BrowserExtensionPanel: View {
     private var statusPill: some View {
         let (text, color): (String, Color) = {
             if !monitor.profilesNeedingUpdate.isEmpty { return ("Update needed", SemiTheme.amber) }
-            if monitor.profiles.contains(where: { $0.status == .updating }) { return ("Updating…", SemiTheme.cyan) }
             if monitor.profiles.contains(where: \.isActive) { return ("Active", SemiTheme.green) }
             if !monitor.profiles.isEmpty { return ("Browser closed", SemiTheme.textMuted) }
             return (monitor.isPrepared ? "Not detected" : "Not set up", SemiTheme.textMuted)
@@ -133,19 +132,16 @@ struct BrowserExtensionPanel: View {
         switch profile.status {
         case .upToDate:
             return "Up to date · \(profile.version) · \(seen)"
-        case .updating:
-            return "Updating \(profile.version) → \(monitor.expectedVersion ?? "")…"
         case .updateNeeded:
-            return "Runs \(profile.version) · needs a manual update to \(monitor.expectedVersion ?? "the new version")"
+            return "Runs \(profile.version) · reload it to use \(monitor.expectedVersion ?? "the new version")"
         case .outdatedIdle:
-            return "Runs \(profile.version) · updates when the browser next runs · \(seen)"
+            return "Ran \(profile.version) · reload it to update when the browser runs · \(seen)"
         }
     }
 
     private func icon(for profile: ExtensionMonitor.Profile) -> String {
         switch profile.status {
         case .upToDate: return profile.isActive ? "checkmark.circle.fill" : "moon.zzz"
-        case .updating: return "arrow.triangle.2.circlepath"
         case .updateNeeded: return "exclamationmark.triangle.fill"
         case .outdatedIdle: return "clock.arrow.circlepath"
         }
@@ -154,7 +150,6 @@ struct BrowserExtensionPanel: View {
     private func color(for profile: ExtensionMonitor.Profile) -> Color {
         switch profile.status {
         case .upToDate: return profile.isActive ? SemiTheme.green : SemiTheme.textMuted
-        case .updating: return SemiTheme.cyan
         case .updateNeeded: return SemiTheme.amber
         case .outdatedIdle: return SemiTheme.textMuted
         }
@@ -165,11 +160,11 @@ struct BrowserExtensionPanel: View {
             Label("Update the extension in \(profile.label)", systemImage: "exclamationmark.triangle.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(SemiTheme.amber)
-            Text("SemiVPN installed extension \(monitor.expectedVersion ?? "") but this browser still runs \(profile.version). It usually updates itself; this time it needs a reload:")
+            Text("SemiVPN installed extension \(monitor.expectedVersion ?? ""); this browser still runs \(profile.version). A browser loads a new version of an unpacked extension only when you reload it:")
                 .font(.system(size: 11))
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
-                Text("1. Open the browser’s Extensions page.")
+                Text("1. Open SemiVPN’s entry on the browser’s Extensions page.")
                 Text("2. Click the reload button (↻) on “SemiVPN Domain Routing”.")
                 Text("Still on the old version? The browser loads the extension from another folder: remove it there and load the SemiVPN folder instead.")
                     .foregroundStyle(SemiTheme.textMuted)
@@ -200,7 +195,7 @@ struct BrowserExtensionPanel: View {
     private func open(_ browser: ChromiumBrowser) {
         guard openingBrowser == nil else { return }
         openingBrowser = browser
-        ChromeExtensionInstaller.openExtensionsPage(in: browser) { error in
+        ChromeExtensionInstaller.openExtensionsPage(in: browser, showingSemiVPN: true) { error in
             openingBrowser = nil
             message = error
         }
@@ -266,7 +261,7 @@ struct ExtensionSetupSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Add SemiVPN to \(browser.name)")
                         .font(.system(size: 17, weight: .bold))
-                    Text("A one-time setup per browser profile. Later updates install themselves.")
+                    Text("A one-time setup per browser profile. After SemiVPN updates, one click on the Extensions page loads the new version.")
                         .font(.system(size: 11))
                         .foregroundStyle(SemiTheme.textMuted)
                 }

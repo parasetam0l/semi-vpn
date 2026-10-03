@@ -15,14 +15,15 @@
     <section id="update-notice" class="update-notice" hidden role="status" aria-labelledby="update-title">
       <span class="update-icon" aria-hidden="true">↻</span>
       <div class="update-body">
-        <strong id="update-title">Extension update available</strong>
+        <strong id="update-title">Extension update ready</strong>
         <small id="update-detail"></small>
-        <small id="update-folder-hint" hidden>Reloading did not update it, so this browser loads the extension from another folder. On the Extensions page, remove “SemiVPN Domain Routing” and load this folder instead:</small>
-        <code id="update-folder-path" hidden></code>
         <div class="update-actions">
-          <button id="update-reload" type="button">Reload now</button>
-          <button id="update-open-extensions" class="secondary" type="button">Extensions page</button>
-          <button id="update-copy-folder" class="secondary" type="button" hidden>Copy path</button>
+          <button id="update-open-extensions" type="button">Open Extensions page</button>
+        </div>
+        <small>Still the old version after reloading? This browser loads the extension from another folder: remove “SemiVPN Domain Routing” and load this folder instead.</small>
+        <code id="update-folder-path"></code>
+        <div class="update-actions">
+          <button id="update-copy-folder" class="secondary" type="button">Copy path</button>
         </div>
       </div>
     </section>

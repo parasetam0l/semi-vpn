@@ -1,5 +1,5 @@
-// Tests the extension service worker's update logic (build reporting,
-// reload into a new build, manual-update fallback) and its routing badges
+// Tests the extension service worker's update logic (build reporting and
+// the Extensions-page update prompt) and its routing badges
 // against a mocked chrome API. Requires Node 18+.  Usage: node Scripts/extension-tests.mjs
 import fs from "node:fs";
 import path from "node:path";
@@ -60,26 +60,21 @@ const check = (name, cond) => { console.log((cond ? "PASS  " : "FAIL  ") + name)
   await settle();   // the start-up sync
   check("reports instance, brand and build on /status",
     w.calls.urls.some((u) => u.includes("/status?instance=instance-uuid-1&browser=Google%20Chrome&build=0.3.0%20(aaaaaaa)")));
-  check("no reload when the folder has the running build", w.calls.reload === 0);
+  check("no update state when the folder has the running build", !("semiVPNExtensionUpdate" in w.store));
 
   w.setStatus({ extensionBuild: "0.4.0 (bbbbbbb)" });
   await w.ctx.syncFromApp(); await settle();
-  check("reloads once for a new build", w.calls.reload === 1 && w.store.semiVPNExtensionUpdate?.target === "0.4.0 (bbbbbbb)");
-
-  // The reload did not change the running build (loaded from another folder).
-  await w.ctx.syncFromApp(); await settle();
-  check("does not reload again for the same build", w.calls.reload === 1);
-  check("asks for a manual update instead", w.store.semiVPNExtensionUpdate?.manual === true);
+  check("never calls chrome.runtime.reload (it does not load new unpacked files)", w.calls.reload === 0);
+  check("asks for a reload on the Extensions page", w.store.semiVPNExtensionUpdate?.target === "0.4.0 (bbbbbbb)");
   check("manualUpdateNeeded() is true", await w.ctx.manualUpdateNeeded() === true);
-
-  w.setStatus({ extensionBuild: "0.5.0 (ccccccc)" });
-  await w.ctx.syncFromApp(); await settle();
-  check("reloads again for the next build", w.calls.reload === 2 && w.store.semiVPNExtensionUpdate?.manual === false);
+  w.calls.badges.length = 0;
+  await w.ctx.updateBadgeForTab(3, "chrome://newtab/");
+  check("tabs without a routing badge show UPD", w.calls.badges.at(-1) === "UPD");
 }
 // After the reload the new build runs: the state is cleared.
 {
   const w = makeWorld({ running: "0.4.0 (bbbbbbb)", brands: [{ brand: "Microsoft Edge" }, { brand: "Chromium" }, { brand: "Not A(Brand" }] });
-  w.store.semiVPNExtensionUpdate = { target: "0.4.0 (bbbbbbb)", manual: false };
+  w.store.semiVPNExtensionUpdate = { target: "0.4.0 (bbbbbbb)", manual: true };
   w.setStatus({ extensionBuild: "0.4.0 (bbbbbbb)" });
   await settle();
   check("clears the update state once the new build runs", !("semiVPNExtensionUpdate" in w.store) && w.calls.reload === 0);
@@ -90,7 +85,7 @@ const check = (name, cond) => { console.log((cond ? "PASS  " : "FAIL  ") + name)
   const w = makeWorld({ running: "0.4.0 (bbbbbbb)", brands: [] });
   w.setStatus({});
   await settle();
-  check("no reload without extensionBuild", w.calls.reload === 0);
+  check("no update state without extensionBuild", !("semiVPNExtensionUpdate" in w.store));
   check("falls back to Chromium when no brand is known", w.calls.urls.some((u) => u.includes("browser=Chromium")));
 }
 // Badges while the VPN is up but macOS routes SemiVPN's proxy outside it.

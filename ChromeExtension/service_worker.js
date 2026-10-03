@@ -190,10 +190,11 @@ async function fetchConfiguration() {
 }
 
 // The SemiVPN app copies each new extension build into the folder this
-// extension is loaded from (extensionBuild in its status), so a reload picks
-// it up. One reload per build: when it does not help, the browser loads the
-// extension from another folder, and the popup and badge ask the user to
-// update it by hand instead.
+// extension is loaded from (extensionBuild in its status). The extension
+// cannot load it by itself: chrome.runtime.reload() does not re-read an
+// unpacked extension's files (and can leave it unloaded, dropping the PAC),
+// so the popup and badge ask the user to click Reload on the Extensions
+// page, which does.
 async function checkForNewBuild(configuration) {
   const target = configuration.extensionBuild;
   const stored = (await chrome.storage.local.get(UPDATE_KEY))[UPDATE_KEY] || null;
@@ -204,15 +205,8 @@ async function checkForNewBuild(configuration) {
     }
     return;
   }
-  if (!stored || stored.target !== target) {
-    await chrome.storage.local.set({
-      [UPDATE_KEY]: { target, from: RUNNING_BUILD, reloadedAt: Date.now(), manual: false }
-    });
-    chrome.runtime.reload();
-    return;
-  }
-  if (!stored.manual) {
-    await chrome.storage.local.set({ [UPDATE_KEY]: { ...stored, manual: true } });
+  if (stored?.target !== target) {
+    await chrome.storage.local.set({ [UPDATE_KEY]: { target, from: RUNNING_BUILD, manual: true } });
     updateAllActiveTabBadges().catch(() => {});
   }
 }

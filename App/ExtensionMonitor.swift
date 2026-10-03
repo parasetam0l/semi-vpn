@@ -4,11 +4,11 @@ import Foundation
 /// Tracks the browser profiles running the SemiVPN extension and whether they
 /// run the build this app installed.
 ///
-/// A new build reaches the browsers by itself: the app copies it into the
-/// extension folder, and the extension reloads from there within a minute. A
-/// profile still running an old build after that (it loads the extension
-/// from another folder, or the reload failed) needs a manual update; the user
-/// is told so in the Browser tab and notified once per build.
+/// The app copies each new build into the extension folder, but a browser
+/// runs it only after the user clicks Reload on its Extensions page (an
+/// unpacked extension cannot reload its own files). A profile on an old
+/// build is shown as needing that update in the Browser tab, and the user is
+/// notified once per build.
 ///
 /// It also watches whether the browser traffic really uses the VPN: SemiProxy
 /// reports when macOS routes it outside the tunnel (see
@@ -20,12 +20,10 @@ final class ExtensionMonitor: ObservableObject {
     enum Status: Equatable {
         /// Runs the installed build.
         case upToDate
-        /// Runs an older build and should reload itself shortly.
-        case updating
-        /// Still runs an older build: the user has to reload it.
+        /// Runs an older build: the user has to reload it.
         case updateNeeded
-        /// Runs an older build but has not reported recently; it updates
-        /// itself the next time the browser runs.
+        /// Ran an older build when it last reported (the browser is closed
+        /// or the extension is off).
         case outdatedIdle
     }
 
@@ -59,12 +57,8 @@ final class ExtensionMonitor: ObservableObject {
 
     /// Profiles report about once a minute.
     static let activeWindow: TimeInterval = 150
-    /// How long a profile gets to reload itself after a new build appears.
-    static let selfUpdateGrace: TimeInterval = 150
 
     private var timer: Timer?
-    /// When each profile was first seen on an old build, per expected build.
-    private var mismatchSince: [String: Date] = [:]
     private static let notifiedKey = "notifiedExtensionUpdates"
 
     func start() {
@@ -102,7 +96,7 @@ final class ExtensionMonitor: ObservableObject {
             next.append(Profile(
                 report: report,
                 label: label,
-                status: status(of: report, isActive: isActive, now: now),
+                status: status(of: report, isActive: isActive),
                 isActive: isActive
             ))
         }
@@ -124,20 +118,16 @@ final class ExtensionMonitor: ObservableObject {
             return
         }
         AppLogger.log("routing: macOS routes SemiProxy outside the VPN")
-        (NSApp.delegate as? AppDelegate)?.postNotification(
+        AppDelegate.shared?.postNotification(
             title: "Browser traffic is not using the VPN",
             body: (blocks ? "Listed sites are blocked: " : "Listed sites use your regular connection: ")
                 + "macOS stopped routing SemiVPN’s browser proxy through the VPN. Open SemiVPN and choose Repair VPN Routing."
         )
     }
 
-    private func status(of report: BrowserExtension.Report, isActive: Bool, now: Date) -> Status {
+    private func status(of report: BrowserExtension.Report, isActive: Bool) -> Status {
         guard let expected = expectedBuild, report.build != expected else { return .upToDate }
-        guard isActive else { return .outdatedIdle }
-        let key = report.instance + "|" + expected
-        let since = mismatchSince[key] ?? now
-        mismatchSince[key] = since
-        return now.timeIntervalSince(since) < Self.selfUpdateGrace ? .updating : .updateNeeded
+        return isActive ? .updateNeeded : .outdatedIdle
     }
 
     private func notifyAboutNewUpdateNeeds() {
@@ -148,7 +138,7 @@ final class ExtensionMonitor: ObservableObject {
         if notified.count > 200 { notified.removeAll() }
         for profile in pending {
             notified.insert(profile.id + "|" + expected)
-            (NSApp.delegate as? AppDelegate)?.postNotification(
+            AppDelegate.shared?.postNotification(
                 title: "Update the SemiVPN extension in \(profile.report.browser)",
                 body: "\(profile.label) still runs extension \(profile.version). Open its Extensions page and click "
                     + "the reload button on “SemiVPN Domain Routing”. SemiVPN’s Browser tab shows the steps."

@@ -24,6 +24,12 @@ struct ChromiumBrowser: Identifiable, Hashable {
         ChromiumBrowser(name: "Chromium", bundleIdentifier: "org.chromium.Chromium", extensionsPage: "chrome://extensions"),
     ]
 
+    /// The browser's details page for the SemiVPN extension, with its
+    /// Reload button.
+    var extensionDetailsPage: String {
+        "\(extensionsPage)/?id=\(BrowserExtension.id)"
+    }
+
     var applicationURL: URL? {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
     }
@@ -184,8 +190,10 @@ enum ChromeExtensionInstaller {
     /// seconds to hand the URL over, so callers should not issue another
     /// request until `completion` runs (on the main queue, with an error
     /// message on failure); each request opens a tab.
-    static func openExtensionsPage(in browser: ChromiumBrowser, completion: @escaping (String?) -> Void = { _ in }) {
-        guard let url = URL(string: browser.extensionsPage), let applicationURL = browser.applicationURL else {
+    static func openExtensionsPage(in browser: ChromiumBrowser, showingSemiVPN: Bool = false,
+                                   completion: @escaping (String?) -> Void = { _ in }) {
+        let page = showingSemiVPN ? browser.extensionDetailsPage : browser.extensionsPage
+        guard let url = URL(string: page), let applicationURL = browser.applicationURL else {
             AppLogger.log("\(browser.name) is not installed; cannot open its extensions page")
             completion("\(browser.name) is not installed.")
             return

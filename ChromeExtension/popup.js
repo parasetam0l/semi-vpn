@@ -3,7 +3,6 @@ const API_ENDPOINTS = [
   "http://127.0.0.1:49281/v1"
 ];
 
-const UPDATE_KEY = "semiVPNExtensionUpdate";
 const MANIFEST = chrome.runtime.getManifest();
 // See service_worker.js: the build stamped by the SemiVPN app, else the version.
 const RUNNING_BUILD = MANIFEST.version_name || MANIFEST.version;
@@ -42,9 +41,7 @@ const elements = {
   updateNotice: document.getElementById("update-notice"),
   updateTitle: document.getElementById("update-title"),
   updateDetail: document.getElementById("update-detail"),
-  updateFolderHint: document.getElementById("update-folder-hint"),
   updateFolderPath: document.getElementById("update-folder-path"),
-  updateReload: document.getElementById("update-reload"),
   updateOpenExtensions: document.getElementById("update-open-extensions"),
   updateCopyFolder: document.getElementById("update-copy-folder"),
   extVersion: document.getElementById("ext-version")
@@ -409,35 +406,29 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// The SemiVPN app installs its extension build into the folder the browser
-// loads the extension from; the service worker reloads into it by itself.
-// The notice covers the minute until then, and the case where a reload did
-// not help because the browser loads the extension from another folder.
-async function renderUpdateNotice(configuration) {
+// The SemiVPN app installs each new extension build into the folder the
+// browser loads the extension from. Only the Reload button on the Extensions
+// page loads it (chrome.runtime.reload() does not re-read unpacked files), so
+// the notice takes the user there.
+function renderUpdateNotice(configuration) {
   const target = configuration.extensionBuild;
   if (!target || target === RUNNING_BUILD || configuration.lastSyncSucceeded === false) {
     elements.updateNotice.hidden = true;
     return;
   }
-  const stored = (await chrome.storage.local.get(UPDATE_KEY))[UPDATE_KEY] || null;
-  const manual = stored?.manual === true && stored.target === target;
   const order = compareVersions(target, RUNNING_BUILD);
   if (order < 0) {
     elements.updateTitle.textContent = "SemiVPN app is older than this extension";
     elements.updateDetail.textContent = "The app ships extension " + versionOf(target) + "; this browser runs " +
-      versionOf(RUNNING_BUILD) + ". Update the SemiVPN app, or reload to use the app's copy.";
+      versionOf(RUNNING_BUILD) + ". Update the SemiVPN app, or reload the extension to use the app's copy.";
   } else {
-    elements.updateTitle.textContent = "Extension update available";
-    elements.updateDetail.textContent = order > 0
-      ? "SemiVPN installed extension " + versionOf(target) + "; this browser still runs " + versionOf(RUNNING_BUILD) + "."
-      : "SemiVPN installed a newer build of extension " + versionOf(target) + ".";
-    if (!manual) elements.updateDetail.textContent += " It updates itself within a minute, or reload now.";
+    elements.updateTitle.textContent = "Extension update ready";
+    elements.updateDetail.textContent = (order > 0
+      ? "SemiVPN installed extension " + versionOf(target) + "; this browser still runs " + versionOf(RUNNING_BUILD) + ". "
+      : "SemiVPN installed a newer build of extension " + versionOf(target) + ". ") +
+      "Open the Extensions page and click the reload button (↻) on “SemiVPN Domain Routing”.";
   }
-  const folder = configuration.extensionFolder || "";
-  elements.updateFolderHint.hidden = !manual;
-  elements.updateFolderPath.hidden = !manual || !folder;
-  elements.updateFolderPath.textContent = folder;
-  elements.updateCopyFolder.hidden = !manual || !folder;
+  elements.updateFolderPath.textContent = configuration.extensionFolder || "~/Library/Application Support/SemiVPN/ChromeExtension";
   elements.updateNotice.hidden = false;
 }
 
@@ -473,7 +464,7 @@ async function refresh(domainConfiguration = null, preferredHostname = null) {
     }
     const merged = mergeDomainConfiguration(configuration, domainConfiguration);
     render(merged);
-    renderUpdateNotice(merged).catch(() => {});
+    renderUpdateNotice(merged);
     showError("");
     chrome.storage.local.set({ semiVPNDomainConfiguration: merged });
   } catch (error) {
@@ -725,11 +716,6 @@ if (syncBtn) {
     }
   });
 }
-
-elements.updateReload.addEventListener("click", () => {
-  // Loads the copy SemiVPN installed; this popup closes.
-  chrome.runtime.reload();
-});
 
 elements.updateOpenExtensions.addEventListener("click", () => {
   chrome.tabs.create({ url: "chrome://extensions/?id=" + chrome.runtime.id });

@@ -42,21 +42,24 @@ state.
 Each SemiVPN build stamps the bundled extension with a fingerprint of its
 files (`version_name`, e.g. `0.4.0 (1a2b3c4)`), and the app copies a new
 build into the extension folder when it starts. The extension reports the
-build it runs with each status request (about once a minute) and, when the
-app's folder holds a different build, reloads itself into it. No user action
-is needed.
+build it runs with each status request (about once a minute).
 
-When a reload does not bring the new build (the browser loads the extension
-from another folder), the extension stops retrying and asks for a manual
-update: the popup shows an update card with **Reload now**, **Extensions
-page** and the folder to load, tabs without a routing badge show `UPD`, and
-the app's Browser tab shows the steps and notifies once per build.
+A browser loads the new files only when the user clicks the extension's
+Reload button on its Extensions page: `chrome.runtime.reload()` does not
+re-read an unpacked extension's files (tested in Chrome and Chrome for
+Testing; it can even leave the extension unloaded, which would drop its
+PAC), so the extension never reloads itself. Until the user reloads it, the
+popup shows an "Extension update ready" card that opens the Extensions page,
+tabs without a routing badge show `UPD`, and the app's Browser tab shows the
+steps and notifies once per build. If the old version stays after a reload,
+the browser loads the extension from another folder; the card shows the
+folder to load instead.
 
 ## Development
 
 Loading this `ChromeExtension/` directory directly works for development.
 Such a copy is never updated by the app, so after an app update the popup
-and the app report it as needing a manual update; reload it after editing.
+and the app report it as outdated; reload it after editing.
 `node Scripts/extension-tests.mjs` tests the update logic.
 
 ## Routing behavior

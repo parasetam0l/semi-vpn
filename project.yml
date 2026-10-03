@@ -66,6 +66,10 @@ targets:
       - name: Bundle OpenSSL
         script: '"$SRCROOT/Scripts/openssl-bundle.sh"'
         basedOnDependencyAnalysis: false
+    postBuildScripts:
+      - name: Stamp browser extension
+        script: '"$SRCROOT/Scripts/stamp-extension.sh"'
+        basedOnDependencyAnalysis: false
   TunnelProvider:
     type: app-extension
     platform: macOS

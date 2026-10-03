@@ -15,6 +15,8 @@ const elements = {
   currentDomain: document.getElementById("current-domain"),
   currentSiteStatus: document.getElementById("current-site-status"),
   browserModeWarning: document.getElementById("browser-mode-warning"),
+  routingWarning: document.getElementById("routing-warning"),
+  routingWarningDetail: document.getElementById("routing-warning-detail"),
   browserModeWarningDetail: document.getElementById("browser-mode-warning-detail"),
   currentProxyState: document.getElementById("current-proxy-state"),
   currentToggle: document.getElementById("current-toggle"),
@@ -274,6 +276,24 @@ function renderBrowserModeWarning(configuration) {
   }
 }
 
+// The VPN is connected but macOS routes SemiVPN's browser proxy outside it
+// (a per-app rule that stopped matching after an update). The app offers a
+// repair; until then listed sites are blocked or go direct.
+function routingBroken(configuration) {
+  return configuration.tunnelBypassed === true && configuration.forwardingAllowed === true &&
+    configuration.lastSyncSucceeded !== false && browserModeEnabled(routingMode(configuration));
+}
+
+function renderRoutingWarning(configuration) {
+  const broken = routingBroken(configuration);
+  elements.routingWarning.hidden = !broken;
+  if (!broken) return;
+  elements.routingWarningDetail.textContent = (configuration.blockWhenDisconnected === true
+    ? "macOS is not routing SemiVPN's browser proxy through the VPN, so listed sites are blocked. "
+    : "macOS is not routing SemiVPN's browser proxy through the VPN, so listed sites use your regular connection. ") +
+    "Open SemiVPN and choose Repair VPN Routing.";
+}
+
 function renderVPNStatus(configuration) {
   const unavailable = configuration.lastSyncSucceeded === false;
   const status = unavailable ? "unavailable" : (configuration.vpnStatus || "unknown");
@@ -331,8 +351,11 @@ function renderCurrentSite(configuration, domains, subdomainDomains, activeDomai
   elements.currentProxyState.hidden = false;
   elements.removeCurrent.hidden = false;
   const paused = !currentDomainEnabled;
-  const active = currentDomainEnabled && browserEnabled && configuration.forwardingAllowed === true && configuration.lastSyncSucceeded !== false;
-  elements.currentState.textContent = paused ? "Paused" : active ? "Active" : "Passive";
+  const broken = currentDomainEnabled && routingBroken(configuration);
+  const active = currentDomainEnabled && browserEnabled && configuration.forwardingAllowed === true &&
+    configuration.lastSyncSucceeded !== false && !broken;
+  elements.currentState.textContent = paused ? "Paused" : active ? "Active"
+    : broken ? (configuration.blockWhenDisconnected === true ? "Blocked" : "Not via VPN") : "Passive";
   // The switch reflects the saved domain policy (the action is pause/resume),
   // while the state icon and text reflect effective routing and can be
   // Passive when the VPN is disconnected or the app API is unavailable.
@@ -350,6 +373,10 @@ function renderCurrentSite(configuration, domains, subdomainDomains, activeDomai
   elements.currentProxyState.className = "route-panel " + (active ? "active" : paused ? "paused" : "passive");
   if (!currentDomainEnabled) {
     elements.currentStateDetail.textContent = "Paused for this domain. Traffic stays direct.";
+  } else if (broken) {
+    elements.currentStateDetail.textContent = configuration.blockWhenDisconnected === true
+      ? "Blocked: macOS is not routing SemiVPN through the VPN. Repair it in the SemiVPN app."
+      : "This site uses your regular connection: macOS is not routing SemiVPN through the VPN. Repair it in the SemiVPN app.";
   } else if (configuration.lastSyncSucceeded === false) {
     elements.currentStateDetail.textContent = configuration.blockWhenDisconnected === true
       ? "SemiVPN is unavailable. This site is blocked until it is back."
@@ -425,6 +452,7 @@ function render(configuration) {
   const activeDomains = [...normalized.activeDomains].sort();
   const activeSubdomainDomains = normalized.activeSubdomainDomains;
   renderVPNStatus(normalized);
+  renderRoutingWarning(normalized);
   renderBrowserModeWarning(normalized);
   renderCurrentSite(normalized, domains, subdomainDomains, activeDomains, activeSubdomainDomains);
 }

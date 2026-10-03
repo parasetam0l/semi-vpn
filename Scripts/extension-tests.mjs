@@ -1,6 +1,6 @@
 // Tests the extension service worker's update logic (build reporting,
-// reload into a new build, manual-update fallback) against a mocked chrome
-// API. Requires Node 18+.  Usage: node Scripts/extension-tests.mjs
+// reload into a new build, manual-update fallback) and its routing badges
+// against a mocked chrome API. Requires Node 18+.  Usage: node Scripts/extension-tests.mjs
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -12,6 +12,7 @@ function makeWorld({ running, brands }) {
   const store = {};
   const calls = { reload: 0, urls: [], badges: [] };
   let status = {};
+  let domains = { domains: [], revision: 1 };
   const chrome = {
     runtime: {
       getManifest: () => ({ version: running.split(" ")[0], version_name: running }),
@@ -37,7 +38,7 @@ function makeWorld({ running, brands }) {
   };
   const fetch = async (url) => {
     calls.urls.push(url);
-    const body = url.includes("/status") ? status : { domains: [], revision: 1 };
+    const body = url.includes("/status") ? status : domains;
     return { ok: true, json: async () => body };
   };
   const ctx = vm.createContext({
@@ -46,7 +47,7 @@ function makeWorld({ running, brands }) {
     navigator: { userAgentData: { brands } },
   });
   vm.runInContext(src, ctx);
-  return { ctx, store, calls, setStatus: (s) => { status = s; } };
+  return { ctx, store, calls, setStatus: (s) => { status = s; }, setDomains: (d) => { domains = d; } };
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 let failures = 0;
@@ -91,6 +92,22 @@ const check = (name, cond) => { console.log((cond ? "PASS  " : "FAIL  ") + name)
   await settle();
   check("no reload without extensionBuild", w.calls.reload === 0);
   check("falls back to Chromium when no brand is known", w.calls.urls.some((u) => u.includes("browser=Chromium")));
+}
+// Badges while the VPN is up but macOS routes SemiVPN's proxy outside it.
+{
+  const w = makeWorld({ running: "0.4.0 (bbbbbbb)", brands: [{ brand: "Google Chrome" }] });
+  w.setDomains({ domains: ["icanhazip.com"], subdomainDomains: [], inactiveDomains: [], revision: 2 });
+  const badgeFor = async (status) => {
+    w.setStatus({ extensionBuild: "0.4.0 (bbbbbbb)", routingMode: "browser-only", forwardingAllowed: true, ...status });
+    await w.ctx.syncFromApp(); await settle();
+    w.calls.badges.length = 0;
+    await w.ctx.updateBadgeForTab(7, "https://icanhazip.com/");
+    return w.calls.badges.at(-1);
+  };
+  check("listed site shows ON through the VPN", await badgeFor({ tunnelBypassed: false }) === "ON");
+  check("listed site shows ! when the proxy is outside the VPN", await badgeFor({ tunnelBypassed: true }) === "!");
+  check("listed site shows BLK when that also blocks it",
+    await badgeFor({ tunnelBypassed: true, blockWhenDisconnected: true }) === "BLK");
 }
 console.log(failures ? `\n${failures} failed` : "\nall passed");
 process.exit(failures ? 1 : 0);

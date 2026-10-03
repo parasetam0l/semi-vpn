@@ -123,6 +123,8 @@ async function applyConfiguration(configuration) {
     browserRoutingEnabled,
     forwardingAllowed,
     blockWhenDisconnected,
+    // The VPN is up but macOS routes SemiVPN's proxy outside it.
+    tunnelBypassed: configuration.tunnelBypassed === true,
     revision: configuration.revision || 0,
     updatedAt: configuration.updatedAt || null,
     lastSyncSucceeded: true
@@ -438,6 +440,20 @@ async function updateBadgeForTab(tabId, url) {
         await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
       }
       await chrome.action.setTitle({ title: `SemiVPN: Paused for ${hostname}`, tabId });
+    } else if (isBrowserMode && isForwardingAllowed && config.tunnelBypassed === true) {
+      // The VPN is up but this site does not go through it (see the popup).
+      const blocked = config.blockWhenDisconnected === true;
+      await chrome.action.setBadgeText({ text: blocked ? "BLK" : "!", tabId });
+      await chrome.action.setBadgeBackgroundColor({ color: "#dc2626", tabId }); // Red
+      if (chrome.action.setBadgeTextColor) {
+        await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
+      }
+      await chrome.action.setTitle({
+        title: blocked
+          ? `SemiVPN: ${hostname} is blocked, VPN routing needs repair (open SemiVPN)`
+          : `SemiVPN: ${hostname} is NOT going through the VPN, open SemiVPN to repair`,
+        tabId
+      });
     } else if (isBrowserMode && isForwardingAllowed) {
       await chrome.action.setBadgeText({ text: "ON", tabId });
       await chrome.action.setBadgeBackgroundColor({ color: "#10b981", tabId }); // Emerald green

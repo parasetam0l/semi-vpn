@@ -33,7 +33,9 @@ struct SemiVPNApp: App {
                 }
         }
         .defaultSize(width: 400, height: 660)
-        .windowResizability(.contentMinSize)
+        // The width follows the content (400 points); only the height
+        // can change.
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {

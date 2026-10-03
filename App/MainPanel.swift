@@ -484,7 +484,7 @@ struct MainWindowView: View {
             MainPanel(style: .window)
         }
         .frame(width: 400)
-        .frame(minHeight: 480, idealHeight: 660)
+        .frame(minHeight: 480, idealHeight: 660, maxHeight: .infinity)
         .background(SemiTheme.canvas)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

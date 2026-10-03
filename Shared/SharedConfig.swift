@@ -511,6 +511,84 @@ public enum SharedConfig {
         return configuration
     }
 
+    /// A website rule, for changing several at once (an import).
+    public struct DomainRule: Equatable {
+        public var domain: String
+        public var includeSubdomains: Bool
+        public var enabled: Bool
+
+        public init(domain: String, includeSubdomains: Bool, enabled: Bool = true) {
+            self.domain = domain
+            self.includeSubdomains = includeSubdomains
+            self.enabled = enabled
+        }
+    }
+
+    /// Adds several rules in one write. Domains already in the list keep
+    /// their settings. Returns the configuration and the domains added.
+    @discardableResult
+    public static func addDomains(_ rules: [DomainRule]) -> (configuration: DomainConfiguration, added: [String]) {
+        lockDomains()
+        defer { unlockDomains() }
+        var configuration = readDomainConfiguration()
+        var known = Set(configuration.domains)
+        var added: [String] = []
+        for rule in rules {
+            guard let domain = routingDomain(rule.domain), !known.contains(domain) else { continue }
+            known.insert(domain)
+            added.append(domain)
+            configuration.domains.append(domain)
+            if rule.includeSubdomains { configuration.subdomainDomains.append(domain) }
+            if !rule.enabled { configuration.inactiveDomains.append(domain) }
+        }
+        guard !added.isEmpty else { return (configuration, []) }
+        configuration.domains.sort()
+        configuration.subdomainDomains.sort()
+        configuration.inactiveDomains.sort()
+        configuration.revision += 1
+        configuration.updatedAt = Date()
+        writeDomainConfiguration(configuration)
+        return (configuration, added)
+    }
+
+    /// Removes several domains in one write.
+    @discardableResult
+    public static func removeDomains(_ domains: [String]) -> DomainConfiguration {
+        lockDomains()
+        defer { unlockDomains() }
+        var configuration = readDomainConfiguration()
+        let removed = Set(domains)
+        guard configuration.domains.contains(where: removed.contains) else { return configuration }
+        configuration.domains.removeAll(where: removed.contains)
+        configuration.subdomainDomains.removeAll(where: removed.contains)
+        configuration.inactiveDomains.removeAll(where: removed.contains)
+        configuration.revision += 1
+        configuration.updatedAt = Date()
+        writeDomainConfiguration(configuration)
+        return configuration
+    }
+
+    /// Switches several domains on or off in one write.
+    @discardableResult
+    public static func setDomainsEnabled(_ domains: [String], enabled: Bool) -> DomainConfiguration {
+        lockDomains()
+        defer { unlockDomains() }
+        var configuration = readDomainConfiguration()
+        let targets = Set(domains).intersection(configuration.domains)
+        var inactive = Set(configuration.inactiveDomains)
+        if enabled {
+            inactive.subtract(targets)
+        } else {
+            inactive.formUnion(targets)
+        }
+        guard inactive != Set(configuration.inactiveDomains) else { return configuration }
+        configuration.inactiveDomains = inactive.sorted()
+        configuration.revision += 1
+        configuration.updatedAt = Date()
+        writeDomainConfiguration(configuration)
+        return configuration
+    }
+
     @discardableResult
     public static func setBlockWhenDisconnected(_ enabled: Bool) -> DomainConfiguration {
         lockDomains()

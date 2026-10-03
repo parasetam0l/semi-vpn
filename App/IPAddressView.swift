@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// The public IP addresses this Mac shows the internet, IPv4 and IPv6
-/// (only where there is one), without and with the VPN. Opened from the
-/// window's toolbar.
+/// (only where there is one), without and with the VPN; a click copies
+/// one. Opened from the window's toolbar.
 struct IPAddressView: View {
     enum Value: Equatable {
         case checking
@@ -108,11 +108,7 @@ struct IPAddressView: View {
             case .checking:
                 ProgressView().controlSize(.mini)
             case .address(let address):
-                Text(address)
-                    .font(.system(size: 12.5, weight: .medium).monospacedDigit())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                CopyableAddress(address: address, font: .system(size: 12.5, weight: .medium).monospacedDigit())
             case .none:
                 Text("None")
                     .foregroundStyle(.secondary)
@@ -124,6 +120,67 @@ struct IPAddressView: View {
                     .foregroundStyle(.secondary)
                     .help(message)
             }
+        }
+    }
+}
+
+/// An IP address that copies itself when clicked, and says so for a
+/// moment in its place.
+struct CopyableAddress: View {
+    let address: String
+    let font: Font
+    var color: Color = .primary
+    /// Shown with "Click to copy" on hover.
+    var note: String?
+    @State private var copies = 0
+
+    var body: some View {
+        Button(action: copy) {
+            // The address keeps its width while "Copied" covers it.
+            ZStack(alignment: .trailing) {
+                Text(address)
+                    .font(font)
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .opacity(copies > 0 ? 0 : 1)
+                if copies > 0 {
+                    Label("Copied", systemImage: "checkmark")
+                        .font(font)
+                        .foregroundStyle(SemiTheme.green)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(LinkPointer())
+        .help([note, "Click to copy \(address)"].compactMap { $0 }.joined(separator: " "))
+        .accessibilityLabel(address)
+        .accessibilityHint("Copies the address")
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(address, forType: .string)
+        copies += 1
+        let copy = copies
+        Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            // A later click shows "Copied" for its own 1.2 seconds.
+            if copies == copy { copies = 0 }
+        }
+    }
+}
+
+/// The pointing hand over a clickable address (macOS 15 and later).
+private struct LinkPointer: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.pointerStyle(.link)
+        } else {
+            content
         }
     }
 }
@@ -161,23 +218,17 @@ struct IPAddressSummary: View {
             default:
                 VStack(alignment: .trailing, spacing: 1) {
                     if case .address(let address) = addresses.v4 {
-                        Text(address)
-                            .font(.system(size: 13, weight: .medium).monospacedDigit())
-                            .foregroundStyle(sameAsRegular ? SemiTheme.amber : .primary)
-                            .help(sameAsRegular ? "The VPN doesn’t change your address." : "")
+                        CopyableAddress(address: address, font: .system(size: 13, weight: .medium).monospacedDigit(),
+                                        color: sameAsRegular ? SemiTheme.amber : .primary,
+                                        note: sameAsRegular ? "The VPN doesn’t change your address." : nil)
                     } else {
                         Text("Couldn’t check")
                             .foregroundStyle(.secondary)
                     }
                     if case .address(let address) = addresses.v6 {
-                        Text(address)
-                            .font(.system(size: 10.5).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        CopyableAddress(address: address, font: .system(size: 10.5).monospacedDigit(), color: .secondary)
                     }
                 }
-                .textSelection(.enabled)
             }
         }
     }
@@ -289,6 +340,14 @@ final class IPAddressChecker: ObservableObject {
 }
 
 #if DEBUG
+extension CopyableAddress {
+    /// Just clicked, for UISnapshots.
+    init(previewCopied address: String, font: Font) {
+        self.init(address: address, font: font)
+        _copies = State(initialValue: 1)
+    }
+}
+
 extension IPAddressChecker {
     /// Sample addresses for UISnapshots, which never checks.
     func showPreview(regular: IPAddressView.Addresses, vpn: IPAddressView.Addresses) {

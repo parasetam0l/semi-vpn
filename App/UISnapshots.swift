@@ -100,6 +100,14 @@ enum UISnapshots {
                                       vpn: .init(v4: .address("172.104.229.229"), v6: .none),
                                       checkedAt: Date().addingTimeInterval(-4)) {})
             },
+            Screen(name: "ip-address-copied", width: 240) {
+                AnyView(HStack {
+                    Text("With VPN")
+                    Spacer()
+                    CopyableAddress(previewCopied: "172.104.229.229", font: .system(size: 13, weight: .medium).monospacedDigit())
+                }
+                .padding(12))
+            },
             Screen(name: "ip-addresses-checking", width: 380) {
                 AnyView(IPAddressView(regular: .init(v4: .address("198.51.100.23"), v6: .none),
                                       vpn: .init(v4: .checking, v6: .checking), checkedAt: nil) {})

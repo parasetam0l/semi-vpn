@@ -43,14 +43,16 @@ printf '%s\n' 'Generating the Xcode project...'
 xcodegen generate
 
 printf 'Building a signed Debug app with team %s...\n' "$EXPECTED_TEAM_ID"
-# -allowProvisioningUpdates lets Xcode register the bundle IDs and create the
-# development profiles; the team's Apple ID must be signed in to Xcode.
+# Let Xcode register the bundle IDs and this Mac, and create the development
+# profiles (as building in Xcode does); the team's Apple ID must be signed in
+# to Xcode.
 xcodebuild \
     -project "$PROJECT_ROOT/semi-vpn.xcodeproj" \
     -scheme semi-vpn \
     -configuration Debug \
     -derivedDataPath "$DERIVED_DATA" \
     -allowProvisioningUpdates \
+    -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$EXPECTED_TEAM_ID" \
     CODE_SIGN_IDENTITY="Apple Development" \
     CODE_SIGNING_ALLOWED=YES \

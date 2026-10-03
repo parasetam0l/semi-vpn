@@ -77,6 +77,11 @@ proxy, and the proxy follows the VPN state:
   enabled in the app:** the proxy refuses the connection and the PAC has no
   DIRECT fallback, so listed sites never use the regular connection (the
   badge shows `BLK`).
+- **VPN connected, but macOS routes SemiProxy outside it** (a per-app rule
+  that macOS did not refresh after an update): the popup says "Not going
+  through the VPN", the badge shows `!` (`BLK` when listed domains are
+  blocked, which the proxy then does), and the SemiVPN app offers **Repair
+  VPN Routing…**.
 
 The proxy always refuses hosts that are not in the list. The extension syncs
 from the app once per minute, on tab changes and when its popup opens; the

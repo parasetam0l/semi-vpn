@@ -69,6 +69,10 @@ final class AppModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] message in self?.connectError = message }
             .store(in: &cancellables)
+        vpn.stoppedForExtensionUpdate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.restartAfterExtensionUpdate() }
+            .store(in: &cancellables)
         NotificationCenter.default.publisher(for: SharedConfig.domainConfigurationDidChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshDomains() }
@@ -695,6 +699,18 @@ final class AppModel: ObservableObject {
     func disconnect() {
         guard !isPreview else { return }
         vpn.stop()
+    }
+
+    /// macOS stopped the tunnel to replace the network extension with the
+    /// updated build. Per-app on-demand starts it again within seconds; in
+    /// All Apps mode, connect again as before the update.
+    private func restartAfterExtensionUpdate() {
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard vpn.endExtensionUpdateRestart() else { return }
+            AppLogger.log("network extension updated: connecting again")
+            connect()
+        }
     }
 
     /// Applies pending changes: stops the tunnel and starts it again with

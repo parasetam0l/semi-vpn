@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Combine
 import CoreServices
 import NetworkExtension
 import OpenVPNCore
@@ -27,8 +28,13 @@ final class VPNManager: ObservableObject {
     /// (macOS also uses it for on-demand starts). Changes to the selection
     /// made meanwhile apply at the next start.
     @Published private(set) var appliedRouting: SharedConfig.AppliedRouting?
-    /// True while reconnect() stops and starts the tunnel.
+    /// True while reconnect() stops and starts the tunnel, and while the
+    /// tunnel restarts after an update replaced the network extension.
     @Published private(set) var isReconnecting = false
+    /// Sent when macOS stopped the tunnel to replace the network extension
+    /// with a new build; the app starts it again unless per-app on-demand
+    /// does first (see endExtensionUpdateRestart()).
+    let stoppedForExtensionUpdate = PassthroughSubject<Void, Never>()
     /// Credentials entered for this connection without saving them, so a
     /// reconnect doesn't ask again. Cleared by Disconnect.
     private var sessionCredentials: (credentials: TunnelSecrets.Credentials, remember: Bool)?
@@ -63,6 +69,15 @@ final class VPNManager: ObservableObject {
     private var keepCredentialsAfterStop = true
     /// Set by `stop()`: a disconnect the user asked for is not an error.
     private var userRequestedStop = false
+    /// An update replacing the network extension: macOS stops a running
+    /// tunnel to swap the extension, which is not a failure.
+    private enum ExtensionUpdate: Equatable {
+        /// macOS is replacing it; the tunnel's stop is still to come.
+        case replacing(since: Date)
+        /// The tunnel stopped for it and is starting again.
+        case restarting
+    }
+    private var extensionUpdate: ExtensionUpdate?
 
     private let tunnelProviderBundleIdentifier = "com.semivpn.app.TunnelProvider"
     private let proxyHelperBundleIdentifier = "com.semivpn.proxy"
@@ -434,6 +449,41 @@ final class VPNManager: ObservableObject {
         }
     }
 
+    /// Called on the main thread when macOS is about to replace the network
+    /// extension with a new build (the app was updated), which stops a
+    /// running tunnel.
+    func extensionWillBeReplaced() {
+        // .invalid: the configuration hasn't loaded yet at launch, so the
+        // tunnel may be running.
+        guard status != .disconnected else { return }
+        let since = Date()
+        extensionUpdate = .replacing(since: since)
+        if [.connected, .connecting, .reasserting].contains(status) {
+            isReconnecting = true
+        }
+        AppLogger.log("system extension: replacing it stops a running tunnel")
+        // No stop comes when the tunnel wasn't running.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, self.extensionUpdate == .replacing(since: since) else { return }
+            self.endExtensionUpdate()
+        }
+    }
+
+    /// After a stop for an extension update: true when the tunnel is still
+    /// down and nobody stopped it (per-app on-demand starts it again by
+    /// itself, All Apps doesn't), so the caller should connect again.
+    func endExtensionUpdateRestart() -> Bool {
+        guard extensionUpdate == .restarting, status == .disconnected, !userRequestedStop else { return false }
+        endExtensionUpdate()
+        return true
+    }
+
+    private func endExtensionUpdate() {
+        guard extensionUpdate != nil else { return }
+        extensionUpdate = nil
+        isReconnecting = false
+    }
+
     /// Whether macOS applies app rules saved into a running per-app
     /// configuration right away. Tested on macOS 27: an added app used the
     /// VPN 4 seconds after the save, without a reconnect. Apple's DTS said in
@@ -478,6 +528,7 @@ final class VPNManager: ObservableObject {
     func stop() {
         AppLogger.log("disconnect requested")
         sessionCredentials = nil
+        endExtensionUpdate()
         Task {
             await stopTunnel()
         }
@@ -580,7 +631,21 @@ final class VPNManager: ObservableObject {
             // NetworkExtension reports .disconnecting before .disconnected for
             // failures too; only a stop the user asked for is not an error.
             if newStatus == .disconnected, previousStatus != .disconnected, !self.userRequestedStop {
-                self.reportLastDisconnectError(manager)
+                if case .replacing = self.extensionUpdate {
+                    // macOS swapped the network extension for the new build
+                    // (NEAgentErrorDomain error 2, "plugin was disabled").
+                    AppLogger.log("tunnel stopped for the network extension update")
+                    self.extensionUpdate = .restarting
+                    self.isReconnecting = true
+                    self.stoppedForExtensionUpdate.send()
+                } else {
+                    self.endExtensionUpdate()
+                    self.reportLastDisconnectError(manager)
+                }
+            }
+            if newStatus == .connected, self.extensionUpdate == .restarting {
+                AppLogger.log("tunnel running again after the network extension update")
+                self.endExtensionUpdate()
             }
         }
         status = manager.connection.status

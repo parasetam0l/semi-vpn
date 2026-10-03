@@ -135,6 +135,9 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
         withExtension replacement: OSSystemExtensionProperties
     ) -> OSSystemExtensionRequest.ReplacementAction {
         AppLogger.log("system extension: replacing \(existing.bundleVersion) with \(replacement.bundleVersion)")
+        // The request's queue is the main queue; this runs well before
+        // macOS stops the tunnel for the swap.
+        Task { @MainActor in AppModel.shared.vpn.extensionWillBeReplaced() }
         return .replace
     }
 

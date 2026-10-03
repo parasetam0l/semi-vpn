@@ -58,7 +58,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: brew install xcodegen openssl@3
@@ -173,7 +173,7 @@ jobs:
 
       - name: Keep the build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: xcodebuild-log
           path: ${{ runner.temp }}/xcodebuild.log

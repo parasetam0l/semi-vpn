@@ -17,6 +17,11 @@ settings:
   configs:
     Release:
       SEMIVPN_NE_PROVIDER: packet-tunnel-provider-systemextension
+      # Release builds are Developer ID builds for notarization (see
+      # docs/RELEASING.md): manual signing, secure timestamps. Each target
+      # names its provisioning profile below.
+      CODE_SIGN_IDENTITY: Developer ID Application
+      OTHER_CODE_SIGN_FLAGS: --timestamp
 packages:
   OpenVPNCore:
     path: .
@@ -69,6 +74,10 @@ targets:
         ARCHS: $(NATIVE_ARCH_ACTUAL)
         ONLY_ACTIVE_ARCH: NO
         OTHER_LDFLAGS: "-L$(TARGET_TEMP_DIR)/OpenSSL"
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          PROVISIONING_PROFILE_SPECIFIER: "SemiVPN Developer ID"
     preBuildScripts:
       - name: Stage OpenSSL
         script: '"$SRCROOT/Scripts/openssl-stage.sh"'
@@ -109,6 +118,10 @@ targets:
         ARCHS: $(NATIVE_ARCH_ACTUAL)
         ONLY_ACTIVE_ARCH: NO
         OTHER_LDFLAGS: "-L$(TARGET_TEMP_DIR)/OpenSSL"
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          PROVISIONING_PROFILE_SPECIFIER: "SemiVPN Tunnel Developer ID"
     preBuildScripts:
       - name: Stage OpenSSL
         script: '"$SRCROOT/Scripts/openssl-stage.sh"'
@@ -144,6 +157,10 @@ targets:
         ARCHS: $(NATIVE_ARCH_ACTUAL)
         ONLY_ACTIVE_ARCH: NO
         SKIP_INSTALL: YES
+      configs:
+        Release:
+          # No restricted entitlements: Developer ID needs no profile.
+          CODE_SIGN_STYLE: Manual
 schemes:
   semi-vpn:
     build:

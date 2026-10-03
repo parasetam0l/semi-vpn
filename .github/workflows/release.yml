@@ -167,9 +167,9 @@ jobs:
             cat <<EOF
           ## Install
 
-          Open SemiVPN-$VERSION.dmg and drag SemiVPN to Applications. On first launch, allow SemiVPN's network extension in System Settings → General → Login Items & Extensions → Network Extensions. To route sites in Chrome or another Chromium browser, set up the browser extension from SemiVPN's Browser tab.
+          Open SemiVPN-$VERSION.dmg and drag SemiVPN to Applications. On first launch, allow SemiVPN's network extension in System Settings → General → Login Items & Extensions → Network Extensions. To route websites in Chrome or another Chromium browser, set up the browser extension in SemiVPN's Settings → Browser.
 
-          **Updating:** quit SemiVPN, then drag the new version to Applications and replace the old one. The network extension updates by itself; when SemiVPN asks, click Reload on the browser extension.
+          **Updating:** SemiVPN 1.2 and later offer this version by themselves (or Settings → General → Check Now). From an older version, quit SemiVPN, then drag the new version to Applications and replace the old one. The network extension updates by itself; when SemiVPN asks, click Reload on the browser extension.
 
           Requires macOS 14 or later on Apple silicon.
 

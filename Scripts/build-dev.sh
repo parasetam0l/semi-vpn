@@ -20,6 +20,10 @@ if [[ -z "$DEVELOPMENT_TEAM" ]]; then
 fi
 
 EXPECTED_TEAM_ID="$DEVELOPMENT_TEAM"
+# A new build number for every build. macOS keys some caches on it: the
+# per-app VPN rule cache, for one, kept matching an old SemiProxy executable
+# while every build still said "3".
+BUILD_NUMBER="${BUILD_NUMBER:-$(date +%s)}"
 EXPECTED_BUNDLE_ID="com.semivpn.app"
 EXPECTED_EXTENSION_BUNDLE_ID="com.semivpn.app.TunnelProvider"
 
@@ -42,7 +46,7 @@ cd "$PROJECT_ROOT"
 printf '%s\n' 'Generating the Xcode project...'
 xcodegen generate
 
-printf 'Building a signed Debug app with team %s...\n' "$EXPECTED_TEAM_ID"
+printf 'Building a signed Debug app (build %s) with team %s...\n' "$BUILD_NUMBER" "$EXPECTED_TEAM_ID"
 # Let Xcode register the bundle IDs and this Mac, and create the development
 # profiles (as building in Xcode does); the team's Apple ID must be signed in
 # to Xcode.
@@ -54,6 +58,7 @@ xcodebuild \
     -allowProvisioningUpdates \
     -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$EXPECTED_TEAM_ID" \
+    CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
     CODE_SIGN_IDENTITY="Apple Development" \
     CODE_SIGNING_ALLOWED=YES \
     CODE_SIGNING_REQUIRED=YES \

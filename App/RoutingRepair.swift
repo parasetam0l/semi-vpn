@@ -1,16 +1,20 @@
 import Foundation
 import SwiftUI
 
-/// Restarts macOS's VPN service (nesessionmanager) with the user's
-/// administrator password.
+/// Clears macOS's per-app VPN app cache and restarts its VPN service
+/// (nesessionmanager), with the user's administrator password.
 ///
-/// nesessionmanager resolves each per-app rule to the executables it matches
-/// once per signing identifier and keeps that until it restarts. After an
-/// update that changes SemiProxy's executable, the rule no longer matches it
-/// and browser traffic leaves outside the VPN; only a restart of the service
-/// (or of the Mac) clears that. The restart briefly disconnects every VPN on
-/// the Mac; launchd starts the service again at once.
+/// Network Extension resolves each per-app rule to the executables it
+/// matches once per signing identifier and stores that in a cache file that
+/// survives restarts. After an update that changes SemiProxy's executable,
+/// the rule can keep matching the old one, and browser traffic leaves
+/// outside the VPN. The service is frozen, the cache file removed, and the
+/// service killed so it cannot write its copy back; launchd starts it again
+/// at once and it rebuilds the cache. Every VPN on the Mac disconnects
+/// briefly.
 enum VPNRoutingRepair {
+    static let cacheFile = "/Library/Preferences/com.apple.networkextension.uuidcache.plist"
+
     enum Failure: Error, Equatable {
         case cancelled
         case failed(String)
@@ -19,9 +23,10 @@ enum VPNRoutingRepair {
     static func restartVPNService(completion: @escaping (Result<Void, Failure>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let script = """
-            do shell script "/usr/bin/killall nesessionmanager" with prompt "SemiVPN wants to restart the macOS VPN \
-            service so that browser traffic uses the VPN again. All VPN connections disconnect briefly." \
-            with administrator privileges
+            do shell script "/usr/bin/killall -STOP nesessionmanager; /bin/rm -f \(cacheFile); \
+            /usr/bin/killall -KILL nesessionmanager" with prompt "SemiVPN wants to clear the macOS VPN app cache \
+            and restart the VPN service so that browser traffic uses the VPN again. All VPN connections \
+            disconnect briefly." with administrator privileges
             """
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -83,7 +88,7 @@ struct RoutingRepairBanner: View {
                      ? "macOS is not routing SemiVPN’s browser proxy through the VPN, so listed sites are blocked."
                      : "macOS is not routing SemiVPN’s browser proxy through the VPN, so listed sites use your regular connection.")
                     .font(.system(size: 11))
-                Text("This happens when macOS keeps an outdated copy of SemiVPN’s routing rule after an update. Repairing restarts the macOS VPN service: it asks for your administrator password and briefly disconnects all VPNs.")
+                Text("macOS still matches the routing rule against an older copy of SemiVPN’s proxy. Repairing clears that record and restarts the macOS VPN service: it asks for your administrator password and briefly disconnects all VPNs.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(SemiTheme.textMuted)
                 if let note = note {
@@ -120,7 +125,7 @@ struct RoutingRepairBanner: View {
     private var note: String? {
         switch phase {
         case .failed(let message): return "The VPN service could not be restarted: \(message)"
-        case .stillBroken: return "Still not routed through the VPN. Restarting the Mac clears it for certain."
+        case .stillBroken: return "Still not routed through the VPN after the repair. As a workaround, use the All apps routing mode."
         default: return nil
         }
     }

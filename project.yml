@@ -28,8 +28,8 @@ targets:
       properties:
         CFBundleDisplayName: SemiVPN
         CFBundleIconFile: AppIcon
-        CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.utilities
@@ -115,6 +115,8 @@ targets:
       path: ProxyHelper/Info.plist
       properties:
         LSUIElement: true
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.proxy

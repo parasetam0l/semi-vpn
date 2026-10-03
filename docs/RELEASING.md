@@ -60,19 +60,23 @@ App-Specific Passwords → **+** (label it e.g. "SemiVPN notarization").
 
 With the [GitHub CLI](https://cli.github.com), in the repository folder.
 `gh secret set NAME` without a value asks for it, so it stays out of your
-shell history:
+shell history. `NOTARY_APPLE_ID` is your Apple ID e-mail and
+`NOTARY_PASSWORD` the app-specific password from step 4:
 
 ```sh
 base64 -i DeveloperID.p12 | gh secret set DEVELOPER_ID_P12_BASE64
 gh secret set DEVELOPER_ID_P12_PASSWORD
 base64 -i SemiVPN_Developer_ID.provisionprofile | gh secret set APP_PROFILE_BASE64
 base64 -i SemiVPN_Tunnel_Developer_ID.provisionprofile | gh secret set TUNNEL_PROFILE_BASE64
-gh secret set NOTARY_APPLE_ID     # your Apple ID e-mail
-gh secret set NOTARY_PASSWORD     # the app-specific password
+gh secret set NOTARY_APPLE_ID
+gh secret set NOTARY_PASSWORD
 ```
 
-Then delete the exported `DeveloperID.p12`; the certificate stays in your
-keychain. Secrets are not available to workflows started from forks.
+These are repository secrets: only this repository's workflows can read
+them, and not when started from forks. Another repository needs its own
+copies (the certificate and notary values can be the same, the profiles are
+per app). Then delete the exported `DeveloperID.p12`; the certificate stays
+in your keychain.
 
 ## Making a release
 

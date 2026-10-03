@@ -29,6 +29,7 @@ struct MainWindowView: View {
         .frame(width: 400)
         .frame(minHeight: 520, idealHeight: 700, maxHeight: .infinity, alignment: .top)
         .background(SemiTheme.canvas)
+        .modifier(PlainTitleBar())
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 IPAddressButton()
@@ -64,6 +65,21 @@ struct MainWindowView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.connectError ?? "")
+        }
+    }
+}
+
+/// One surface from the top of the window: no title text (the status
+/// header names the window; Mission Control and the Window menu still say
+/// SemiVPN) and no separate title bar background. macOS 15 and later.
+private struct PlainTitleBar: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content
+                .toolbar(removing: .title)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        } else {
+            content
         }
     }
 }

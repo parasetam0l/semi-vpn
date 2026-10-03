@@ -127,19 +127,21 @@ struct MenuBarPanel: View {
                 AppDelegate.shared?.showWindow()
             }
             Spacer()
-            Button {
-                MenuBarController.shared?.close()
-                SettingsWindowController.shared.show()
-            } label: {
-                Image(systemName: "gearshape")
+            HStack(spacing: 16) {
+                Button {
+                    MenuBarController.shared?.close()
+                    SettingsWindowController.shared.show()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .help("Settings")
+                Button {
+                    NSApp.terminate(nil)
+                } label: {
+                    Image(systemName: "power")
+                }
+                .help("Quit SemiVPN")
             }
-            .help("Settings")
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-            }
-            .help("Quit SemiVPN")
         }
         .buttonStyle(.borderless)
     }
@@ -636,6 +638,7 @@ private struct AppListRow: View {
     let onRemove: () -> Void
     @EnvironmentObject private var model: AppModel
     @State private var hovering = false
+    @State private var showLockedHint = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -648,14 +651,27 @@ private struct AppListRow: View {
             if hovering && !locked {
                 RemoveButton(action: onRemove)
             }
+            // While connected the switch stays clickable, explains why it
+            // doesn't change, and stays as it was.
             Toggle(app.name, isOn: Binding(
                 get: { model.isAppEnabled(app) },
-                set: { model.setApp(app, enabled: $0) }
+                set: { enabled in
+                    if locked {
+                        showLockedHint = true
+                    } else {
+                        model.setApp(app, enabled: enabled)
+                    }
+                }
             ))
             .toggleStyle(.switch)
             .controlSize(.mini)
             .labelsHidden()
-            .disabled(locked)
+            .popover(isPresented: $showLockedHint, arrowEdge: .trailing) {
+                LockedAppsHint(title: "Disconnect to change apps") {
+                    showLockedHint = false
+                    model.disconnect()
+                }
+            }
         }
         .padding(.vertical, 1)
         .contentShape(Rectangle())
@@ -699,14 +715,15 @@ private struct WebsiteListRow: View {
     }
 }
 
-/// Shown by Add Apps… while connected: the app rules are fixed until the
-/// VPN disconnects.
+/// Shown by Add Apps… and the app switches while connected: the app rules
+/// are fixed until the VPN disconnects.
 private struct LockedAppsHint: View {
+    var title = "Disconnect to add apps"
     let onDisconnect: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Disconnect to add apps")
+            Text(title)
                 .font(.system(size: 13, weight: .semibold))
             Text("Apps can’t be added or changed while the VPN is connected.")
                 .font(.system(size: 12))

@@ -29,7 +29,6 @@ struct MainWindowView: View {
         .frame(width: 400)
         .frame(minHeight: 520, idealHeight: 700, maxHeight: .infinity, alignment: .top)
         .background(SemiTheme.canvas)
-        .modifier(PlainTitleBar())
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 IPAddressButton()
@@ -43,6 +42,8 @@ struct MainWindowView: View {
                 .help("Settings")
             }
         }
+        // After the toolbar items: its spacer must come before them.
+        .modifier(PlainTitleBar())
         .sheet(item: Binding(
             get: { model.vpn.credentialRequest },
             set: { model.vpn.credentialRequest = $0 }
@@ -71,13 +72,16 @@ struct MainWindowView: View {
 
 /// One surface from the top of the window: no title text (the status
 /// header names the window; Mission Control and the Window menu still say
-/// SemiVPN) and no separate title bar background. macOS 15 and later.
+/// SemiVPN) and no separate title bar background. Without the title, the
+/// toolbar buttons would follow the traffic lights: a flexible spacer keeps
+/// them on the right. macOS 26 and later (ToolbarSpacer).
 private struct PlainTitleBar: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
+        if #available(macOS 26.0, *) {
             content
                 .toolbar(removing: .title)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                .toolbar { ToolbarSpacer(.flexible) }
         } else {
             content
         }

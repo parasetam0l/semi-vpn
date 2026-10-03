@@ -23,8 +23,9 @@ final class VPNManager: ObservableObject {
     /// Set when connecting needs credentials the app does not have; the UI
     /// prompts and calls `start(credentials:remember:)` again.
     @Published var credentialRequest: CredentialRequest?
-    /// What the running tunnel was started with; nil while it is down.
-    /// Changes to the selection made meanwhile apply at the next start.
+    /// The routing in the saved VPN configuration: what the tunnel runs
+    /// (macOS also uses it for on-demand starts). Changes to the selection
+    /// made meanwhile apply at the next start.
     @Published private(set) var appliedRouting: SharedConfig.AppliedRouting?
     /// True while reconnect() stops and starts the tunnel.
     @Published private(set) var isReconnecting = false
@@ -433,22 +434,34 @@ final class VPNManager: ObservableObject {
         }
     }
 
+    /// Whether macOS applies app rules saved into a running per-app
+    /// configuration right away. Tested on macOS 27: an added app used the
+    /// VPN 4 seconds after the save, without a reconnect. Apple's DTS said in
+    /// 2022 (macOS 12) that a restart was needed, and versions in between are
+    /// untested, so there the app keeps asking for a reconnect.
+    static let appliesAppRulesLive = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0)
+    )
+
     /// Writes the current app rules into the running per-app configuration
-    /// when only the apps changed. Per Apple, a running tunnel keeps the
-    /// rules it started with until it restarts; saving them shows whether a
-    /// newer macOS applies them at once, and keeps the configuration in step
-    /// for on-demand starts.
+    /// after the apps changed (not the profile or the route, which need a
+    /// reconnect). Where macOS applies them at once, they become the
+    /// applied routing.
     func saveAppRulesToRunningConfiguration() async {
         guard let manager = tunnelManager, manager.routingMethod == .sourceApplication,
               let selection, let applied = appliedRouting,
-              applied.routingMode == selection.routingMode, applied.profileName == selection.profileName,
-              applied != SharedConfig.AppliedRouting(selection: selection) else { return }
+              applied.routingMode == selection.routingMode, applied.profileName == selection.profileName else { return }
         do {
             let rules = try makeAppRules(for: selection)
             try await manager.loadFromPreferences()
             manager.appRules = rules
             try await manager.saveToPreferences()
             AppLogger.log("running configuration: saved \(rules.count) app rules; tunnel status \(manager.connection.status.rawValue)")
+            if Self.appliesAppRulesLive {
+                let routing = SharedConfig.AppliedRouting(selection: selection)
+                SharedConfig.saveAppliedRouting(routing)
+                await MainActor.run { self.appliedRouting = routing }
+            }
         } catch {
             AppLogger.log("running configuration: saving app rules failed: \(error)")
         }
@@ -512,7 +525,6 @@ final class VPNManager: ObservableObject {
         if self.tunnelManager === manager {
             self.tunnelManager = nil
             self.status = .disconnected
-            self.clearAppliedRouting()
             self.updateProxyAvailability()
             self.restartProxyHelper()
             if let statusObserver {
@@ -522,11 +534,6 @@ final class VPNManager: ObservableObject {
         }
     }
 
-    private func clearAppliedRouting() {
-        guard appliedRouting != nil else { return }
-        appliedRouting = nil
-        SharedConfig.saveAppliedRouting(nil)
-    }
 
     /// Restore the manager that macOS may still be running after the app was
     /// relaunched. Without this, the UI starts at `.invalid` and misses status
@@ -563,9 +570,6 @@ final class VPNManager: ObservableObject {
             let previousStatus = self.status
             let newStatus = manager.connection.status
             self.status = newStatus
-            if newStatus == .disconnected || newStatus == .invalid {
-                self.clearAppliedRouting()
-            }
             self.updateProxyAvailability()
             AppLogger.log("VPN status: \(newStatus.rawValue)")
 
@@ -580,9 +584,6 @@ final class VPNManager: ObservableObject {
             }
         }
         status = manager.connection.status
-        if status == .disconnected || status == .invalid {
-            clearAppliedRouting()
-        }
         updateProxyAvailability()
     }
 

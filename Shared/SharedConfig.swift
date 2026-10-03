@@ -316,10 +316,12 @@ public enum SharedConfig {
 
     // MARK: - Applied routing
 
-    /// What the running tunnel was started with. The user can change the
-    /// selection while connected; macOS applies new app rules only when the
-    /// tunnel starts again, so until the reconnect the browser proxy keeps
-    /// following the running tunnel, and the app shows what is pending.
+    /// What the VPN configuration was last started with (or, where macOS
+    /// applies app rules at once, updated to). The user can change the
+    /// selection while connected; a new profile or route applies only when
+    /// the tunnel starts again, so until the reconnect the browser proxy
+    /// keeps following the running tunnel, and the app shows what is
+    /// pending.
     public struct AppliedRouting: Codable, Equatable {
         public var profileName: String
         public var routingMode: RoutingMode
@@ -344,7 +346,7 @@ public enum SharedConfig {
         containerURL?.appendingPathComponent(appliedRoutingFile)
     }
 
-    /// Records what the tunnel was started with, or nil when it stopped.
+    /// Records what the tunnel was started with.
     public static func saveAppliedRouting(_ routing: AppliedRouting?) {
         ensureDirectories()
         guard let url = appliedRoutingURL else { return }

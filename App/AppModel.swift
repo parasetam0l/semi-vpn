@@ -116,7 +116,9 @@ final class AppModel: ObservableObject {
         if applied.profileName != current.profileName { changes.append("profile") }
         if applied.routingMode != current.routingMode {
             changes.append("route")
-        } else if applied.appIdentifiers != current.appIdentifiers {
+        } else if applied.appIdentifiers != current.appIdentifiers, !VPNManager.appliesAppRulesLive {
+            // Where macOS applies app rules at once, they are saved into the
+            // running configuration within a second; nothing to reconnect.
             changes.append("apps")
         }
         return changes
@@ -859,9 +861,9 @@ final class AppModel: ObservableObject {
     private var appRulesUpdate: Task<Void, Never>?
 
     /// After app changes while connected, writes the new app rules into the
-    /// running configuration (once the changes settle). macOS applies them
-    /// only when the tunnel restarts (Apple DTS, macOS 12); the Reconnect
-    /// notice stays until then.
+    /// running configuration once the changes settle. macOS 27 applies them
+    /// at once; on earlier versions the Reconnect notice stays until the
+    /// tunnel restarts.
     private func scheduleAppRulesUpdate() {
         guard !isPreview, isTunnelActive else { return }
         appRulesUpdate?.cancel()

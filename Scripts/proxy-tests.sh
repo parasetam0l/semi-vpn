@@ -31,8 +31,9 @@ xcodebuild -project "$PROJECT_ROOT/semi-vpn.xcodeproj" -scheme semi-vpn -configu
     || { echo "build failed" >&2; exit 2; }
 PROXY="$WORK/dd/Build/Products/Debug/SemiProxy.app/Contents/MacOS/SemiProxy"
 
-mkdir -p "$WORK/config" "$WORK/www"
+mkdir -p "$WORK/config" "$WORK/www" "$WORK/extension"
 echo "hello from upstream" > "$WORK/www/index.html"
+echo '{"manifest_version":3,"version":"9.9.9","version_name":"9.9.9 (test123)"}' > "$WORK/extension/manifest.json"
 write_config() { # block-when-disconnected forwarding-allowed
     cat > "$WORK/config/domains.json" <<EOF
 {"domains":["127.0.0.1"],"subdomainDomains":[],"inactiveDomains":[],"blockWhenDisconnected":$1,"revision":1}
@@ -44,7 +45,8 @@ write_config false false
 
 (cd "$WORK/www" && exec python3 -m http.server "$UPSTREAM_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
 PIDS+=($!)
-SEMIVPN_CONTAINER="$WORK/config" SEMIVPN_PROXY_PORT=$PROXY_PORT SEMIVPN_CONTROL_PORT=$CONTROL_PORT \
+SEMIVPN_CONTAINER="$WORK/config" SEMIVPN_EXTENSION_DIR="$WORK/extension" \
+    SEMIVPN_PROXY_PORT=$PROXY_PORT SEMIVPN_CONTROL_PORT=$CONTROL_PORT \
     "$PROXY" --parent-pid $$ >/dev/null 2>&1 &
 PIDS+=($!)
 sleep 2
@@ -89,6 +91,18 @@ check "control API answers loopback callers" 200 "$(control "http://127.0.0.1:$C
 check "control API rejects DNS-rebinding hosts" 421 "$(control -H "Host: evil.example:$CONTROL_PORT" "http://127.0.0.1:$CONTROL_PORT/v1/status")"
 check "control API rejects other extensions" 403 "$(control -H "Origin: chrome-extension://abcdefghijklmnopabcdefghijklmnop" "http://127.0.0.1:$CONTROL_PORT/v1/status")"
 check "control API rejects web pages" 403 "$(control -H "Origin: https://evil.example" -X POST -d '{"domain":"x.example"}' "http://127.0.0.1:$CONTROL_PORT/v1/domains")"
+EXTENSION_ORIGIN="chrome-extension://jaiknknmjmncnocbcbneepnefhokegma"
+json_field() { python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1]))' "$1"; }
+check "status reports the extension build the app installed" "9.9.9 (test123)" \
+    "$(curl -s -H "Origin: $EXTENSION_ORIGIN" "http://127.0.0.1:$CONTROL_PORT/v1/status" | json_field extensionBuild)"
+curl -s -o /dev/null -H "Origin: $EXTENSION_ORIGIN" \
+    "http://127.0.0.1:$CONTROL_PORT/v1/status?instance=profile-1&browser=Test%20Browser&build=1.0.0%20(old)"
+check "status records the build a browser runs" "Test Browser 1.0.0 (old)" \
+    "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))[0]; print(r["browser"], r["build"])' "$WORK/config/extension_reports.json" 2>&1)"
+curl -s -o /dev/null -H "Origin: $EXTENSION_ORIGIN" \
+    "http://127.0.0.1:$CONTROL_PORT/v1/status?instance=profile-2&build=1.0.0"
+check "incomplete browser reports are ignored" 1 \
+    "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$WORK/config/extension_reports.json" 2>&1)"
 check "control API accepts the SemiVPN extension" 200 "$(control -H "Origin: chrome-extension://jaiknknmjmncnocbcbneepnefhokegma" "http://127.0.0.1:$CONTROL_PORT/v1/status")"
 
 echo

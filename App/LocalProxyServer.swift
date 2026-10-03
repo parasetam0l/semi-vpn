@@ -20,9 +20,9 @@ final class LocalProxyServer {
     private var restartWorkItem: DispatchWorkItem?
 
     private static let headerSeparator = Data([13, 10, 13, 10])
-    /// The SemiVPN Chrome extension's ID, pinned by the `key` in its
-    /// manifest; only it may change the routing policy.
-    static let extensionOrigin = "chrome-extension://jaiknknmjmncnocbcbneepnefhokegma"
+    /// The SemiVPN extension, whose ID the `key` in its manifest pins; only
+    /// it may change the routing policy.
+    static let extensionOrigin = BrowserExtension.origin
 
     /// Parsed config files, re-read only when they change on disk (they
     /// used to be read several times per proxied connection).
@@ -566,6 +566,18 @@ final class LocalProxyServer {
 
         switch (request.method, path) {
         case ("GET", "/v1/status"):
+            // The extension says which build it runs (build, browser and a
+            // per-profile instance ID) so the app can tell when a browser
+            // still runs an old copy.
+            let query = components?.queryItems ?? []
+            func parameter(_ name: String) -> String? { query.first { $0.name == name }?.value }
+            if let report = BrowserExtension.Report(
+                instance: parameter("instance"), browser: parameter("browser"), build: parameter("build"), at: Date()
+            ), BrowserExtension.record(report) {
+                DistributedNotificationCenter.default().postNotificationName(
+                    BrowserExtension.reportsDidChangeNotification, object: nil, userInfo: nil, deliverImmediately: true
+                )
+            }
             let domainConfiguration = domainConfiguration()
             let selection = SharedConfig.loadSelection()
             let status = LocalAPIStatus(
@@ -585,7 +597,9 @@ final class LocalProxyServer {
                 activeSubdomainDomains: domainConfiguration.activeSubdomainDomains,
                 blockWhenDisconnected: domainConfiguration.blockWhenDisconnected,
                 revision: domainConfiguration.revision,
-                updatedAt: domainConfiguration.updatedAt
+                updatedAt: domainConfiguration.updatedAt,
+                extensionBuild: BrowserExtension.build(ofExtensionAt: BrowserExtension.installedDirectoryURL),
+                extensionFolder: BrowserExtension.installedDirectoryURL.path
             )
             sendJSON(status, status: "200 OK", on: connection)
         case ("GET", "/v1/domains"):
@@ -755,6 +769,10 @@ final class LocalProxyServer {
         let blockWhenDisconnected: Bool
         let revision: Int
         let updatedAt: Date
+        /// The build in the folder browsers load the extension from (what a
+        /// reload of the extension would run), and that folder.
+        let extensionBuild: String?
+        let extensionFolder: String
     }
 
     private struct HTTPRequest {

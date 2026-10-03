@@ -20,17 +20,23 @@ for bin in "$TARGET_BUILD_DIR/$EXECUTABLE_PATH" "$TARGET_BUILD_DIR/${EXECUTABLE_
 done
 
 if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+    # Xcode's processed entitlements for this target: build settings such as
+    # $(AppIdentifierPrefix) expanded, plus the identifiers the provisioning
+    # profile requires. Not the CODE_SIGN_ENTITLEMENTS source file: an
+    # incremental build can skip Xcode's own signing of the product and keep
+    # the signature made here, which macOS then refuses to launch.
+    ENTITLEMENTS="$TARGET_TEMP_DIR/$FULL_PRODUCT_NAME.xcent"
+    if [ ! -f "$ENTITLEMENTS" ]; then
+        echo "warning: $ENTITLEMENTS not found; signing $FULL_PRODUCT_NAME without entitlements"
+        ENTITLEMENTS=""
+    fi
     # The debug dylib first: the stub executable cannot be signed while a
     # subcomponent is unsigned.
     for bin in "$TARGET_BUILD_DIR/${EXECUTABLE_PATH}.debug.dylib" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"; do
         [ -f "$bin" ] || continue
-        if [ -n "${CODE_SIGN_ENTITLEMENTS:-}" ]; then
-            codesign --force --options runtime --sign "$EXPANDED_CODE_SIGN_IDENTITY" --entitlements "$CODE_SIGN_ENTITLEMENTS" "$bin" \
-                || echo "warning: could not re-sign $bin"
-        else
-            codesign --force --options runtime --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$bin" \
-                || echo "warning: could not re-sign $bin"
-        fi
+        codesign --force --options runtime --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+            ${ENTITLEMENTS:+--entitlements "$ENTITLEMENTS"} "$bin" \
+            || echo "warning: could not re-sign $bin"
     done
     for lib in "$DEST/libssl.3.dylib" "$DEST/libcrypto.3.dylib"; do
         codesign --force --options runtime --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$lib" \
@@ -39,6 +45,6 @@ if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
     # Re-seal the product after modifying its nested dylibs, so the bundle
     # signature matches its contents.
     codesign --force --options runtime --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
-        ${CODE_SIGN_ENTITLEMENTS:+--entitlements "$CODE_SIGN_ENTITLEMENTS"} "$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME" \
+        ${ENTITLEMENTS:+--entitlements "$ENTITLEMENTS"} "$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME" \
         || echo "warning: could not re-seal $FULL_PRODUCT_NAME"
 fi

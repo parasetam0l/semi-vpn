@@ -92,6 +92,16 @@ fi
 
 codesign --verify --deep --strict "$BUILD_APP"
 
+# macOS refuses to launch a product whose entitlements its provisioning
+# profile does not grant, e.g. an unexpanded $(AppIdentifierPrefix).
+for product in "$BUILD_APP" "$BUILD_EXTENSION"; do
+    entitlements="$(codesign -d --entitlements - --xml "$product" 2>/dev/null | plutil -convert xml1 -o - - 2>/dev/null || true)"
+    if [[ "$entitlements" == *'$('* || "$entitlements" != *"<string>$EXPECTED_TEAM_ID.com.semivpn.shared</string>"* ]]; then
+        printf 'Unexpected entitlements in %s:\n%s\n' "$product" "$entitlements" >&2
+        exit 1
+    fi
+done
+
 for debug_dylib in \
     "$BUILD_APP/Contents/MacOS/SemiVPN.debug.dylib" \
     "$BUILD_APP/Contents/PlugIns/TunnelProvider.appex/Contents/MacOS/TunnelProvider.debug.dylib"; do

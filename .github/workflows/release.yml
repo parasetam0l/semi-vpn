@@ -142,16 +142,7 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
         run: |
           dmg="$RUNNER_TEMP/SemiVPN-$VERSION.dmg"
-          staging="$RUNNER_TEMP/dmg"
-          mkdir -p "$staging"
-          ditto "$APP" "$staging/SemiVPN.app"
-          ln -s /Applications "$staging/Applications"
-          # hdiutil occasionally fails with "Resource busy" on CI runners.
-          for attempt in 1 2 3; do
-            hdiutil create -volname "SemiVPN $VERSION" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg" && break
-            [[ $attempt -eq 3 ]] && exit 1
-            sleep 10
-          done
+          Scripts/make-dmg.sh "$APP" "$dmg" "SemiVPN $VERSION"
           codesign --sign "Developer ID Application" --timestamp --keychain "$KEYCHAIN" "$dmg"
           Scripts/notarize.sh "$dmg"
           xcrun stapler staple "$dmg"

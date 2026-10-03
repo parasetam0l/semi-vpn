@@ -114,5 +114,9 @@ as an artifact, and a notarization failure prints Apple's report.
 
 - Builds are Apple silicon only: they link Homebrew's single-architecture
   OpenSSL. An Intel build needs a universal OpenSSL.
+- The DMG window's layout is in `Packaging/dmg` (dmgbuild settings and the
+  background). After changing it, redraw the background with
+  `swift Scripts/dmg-background.swift` and try it with
+  `Scripts/make-dmg.sh path/to/SemiVPN.app test.dmg`.
 - The Developer ID certificate is valid for five years. When a certificate or
   profile is renewed, update the secrets.

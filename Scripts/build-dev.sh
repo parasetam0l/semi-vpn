@@ -140,6 +140,20 @@ printf 'Verified: %s and %s signed with team %s\n' "$actual_bundle" "$extension_
 printf 'Build output: %s\n' "$BUILD_APP"
 
 if [[ "${1:-}" == "--install" ]]; then
+    # macOS protects a downloaded, notarized app (such as a release from the
+    # DMG) from changes by other apps ("App Management"). Find out before
+    # quitting the running SemiVPN.
+    if [[ -d "$INSTALL_APP" ]]; then
+        write_check="$INSTALL_APP/Contents/.semivpn-install-check"
+        if ! touch "$write_check" 2>/dev/null; then
+            printf 'Cannot write to %s: macOS protects the installed app from changes by other apps (App Management).\n' "$INSTALL_APP" >&2
+            printf 'Replace it once in Finder: quit SemiVPN, drag\n  %s\nto Applications and choose Replace. Later installs from here work again.\n' "$BUILD_APP" >&2
+            printf 'Or allow the app you run this script from in System Settings → Privacy & Security → App Management.\n' >&2
+            exit 1
+        fi
+        rm -f "$write_check"
+    fi
+
     installed_team="$(codesign -dv "$INSTALL_APP" 2>&1 | awk -F= '$1 == "TeamIdentifier" { print $2; exit }' || true)"
     if [[ -n "$installed_team" && "$installed_team" != "$EXPECTED_TEAM_ID" ]]; then
         printf 'Note: the installed SemiVPN was signed by team %s, this build by %s.\n' "$installed_team" "$EXPECTED_TEAM_ID"

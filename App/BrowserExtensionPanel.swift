@@ -52,21 +52,19 @@ struct BrowserExtensionPanel: View {
                     Button(monitor.profiles.isEmpty ? "Set up in \(browser.name)…" : "Set up again…") {
                         setupBrowser = browser
                     }
-                    .buttonStyle(AccentButtonStyle())
+                    .buttonStyle(.borderedProminent)
                 } else {
                     Menu(monitor.profiles.isEmpty ? "Set up in a browser…" : "Set up in another browser…") {
                         ForEach(ChromiumBrowser.installed) { browser in
                             Button(browser.name) { setupBrowser = browser }
                         }
                     }
-                    .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .buttonStyle(SecondaryButtonStyle())
                 }
                 Button("Show folder") {
                     ChromeExtensionInstaller.revealInstalledDirectory()
                 }
-                .buttonStyle(SecondaryButtonStyle())
+                .buttonStyle(.bordered)
                 .disabled(!monitor.isPrepared)
                 Spacer()
                 if let build = monitor.expectedBuild {
@@ -188,13 +186,13 @@ struct BrowserExtensionPanel: View {
                     Button(openingBrowser == browser ? "Opening \(browser.name)…" : "Open Extensions page") {
                         open(browser)
                     }
-                    .buttonStyle(AccentButtonStyle())
+                    .buttonStyle(.borderedProminent)
                     .disabled(openingBrowser != nil)
                 }
                 Button("Copy folder path") {
                     ChromeExtensionInstaller.copyInstalledDirectoryPath()
                 }
-                .buttonStyle(SecondaryButtonStyle())
+                .buttonStyle(.bordered)
             }
             .controlSize(.small)
         }
@@ -298,7 +296,7 @@ struct ExtensionSetupSheet: View {
                     Button(opening ? "Opening \(browser.name)…" : "Open \(browser.name) Extensions") {
                         openPage()
                     }
-                    .buttonStyle(AccentButtonStyle())
+                    .buttonStyle(.borderedProminent)
                     .disabled(opening)
                     Text("or type \(browser.extensionsPage) in the address bar")
                         .font(.system(size: 10.5))
@@ -324,7 +322,7 @@ struct ExtensionSetupSheet: View {
                             ChromeExtensionInstaller.copyInstalledDirectoryPath()
                             copied = true
                         }
-                        .buttonStyle(SecondaryButtonStyle())
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
                     }
                 }
@@ -356,19 +354,17 @@ struct ExtensionSetupSheet: View {
                 Spacer()
                 if newProfile != nil {
                     Button("Done", action: onClose)
-                        .buttonStyle(AccentButtonStyle())
+                        .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Close", action: onClose)
-                        .buttonStyle(SecondaryButtonStyle())
+                        .buttonStyle(.bordered)
                         .keyboardShortcut(.cancelAction)
                 }
             }
         }
         .padding(22)
         .frame(width: 540)
-        .background(SemiTheme.canvas)
-        .preferredColorScheme(.dark)
         .onAppear(perform: prepareFolder)
     }
 
@@ -444,8 +440,8 @@ struct ExtensionSetupSheet: View {
     }
 }
 
-/// Shown above the footer on every tab while a browser profile runs an older
-/// extension build than the one SemiVPN installed.
+/// Shown while a browser profile runs an older extension build than the one
+/// SemiVPN installed.
 struct ExtensionUpdateBanner: View {
     @ObservedObject var monitor: ExtensionMonitor
     let onShowSteps: () -> Void
@@ -454,43 +450,31 @@ struct ExtensionUpdateBanner: View {
 
     var body: some View {
         if let profile = monitor.profilesNeedingUpdate.first {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(SemiTheme.amber)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(monitor.profilesNeedingUpdate.count > 1
-                         ? "Update the SemiVPN extension in \(monitor.profilesNeedingUpdate.count) browser profiles"
-                         : "Update the SemiVPN extension in \(profile.label)")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("SemiVPN installed extension \(monitor.expectedBuild.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? ""); \(profile.label) still runs \(profile.shownBuild(comparedTo: monitor.expectedBuild)). Open its Extensions page and click the reload button (↻) on “SemiVPN Domain Routing”.")
-                        .font(.system(size: 11))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let message {
-                        Text(message).font(.system(size: 11)).foregroundStyle(.red)
-                    }
-                }
-                Spacer(minLength: 12)
-                HStack(spacing: 8) {
-                    if let browser = profile.browser {
-                        Button(opening ? "Opening…" : "Open Extensions page") {
-                            guard !opening else { return }
-                            opening = true
-                            ChromeExtensionInstaller.openExtensionsPage(in: browser, showingSemiVPN: true) { error in
-                                opening = false
-                                message = error
-                            }
+            let count = monitor.profilesNeedingUpdate.count
+            let installed = monitor.expectedBuild.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? "a new version"
+            NoticeCard(
+                icon: "arrow.triangle.2.circlepath.circle.fill",
+                tint: SemiTheme.amber,
+                title: count > 1
+                    ? "Update the browser extension in \(count) browser profiles"
+                    : "Update the browser extension in \(profile.label)",
+                detail: "\(profile.label) runs \(profile.shownBuild(comparedTo: monitor.expectedBuild)); SemiVPN installed \(installed). On the Extensions page, click ↻ on “SemiVPN Domain Routing”.",
+                note: message
+            ) {
+                if let browser = profile.browser {
+                    Button(opening ? "Opening…" : "Open Extensions Page") {
+                        guard !opening else { return }
+                        opening = true
+                        ChromeExtensionInstaller.openExtensionsPage(in: browser, showingSemiVPN: true) { error in
+                            opening = false
+                            message = error
                         }
-                        .buttonStyle(AccentButtonStyle())
-                        .disabled(opening)
                     }
-                    Button("Show steps", action: onShowSteps)
-                        .buttonStyle(SecondaryButtonStyle())
+                    .buttonStyle(.borderedProminent)
+                    .disabled(opening)
                 }
+                Button("Show Steps", action: onShowSteps)
             }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 12)
-            .background(SemiTheme.amber.opacity(0.10))
         }
     }
 }

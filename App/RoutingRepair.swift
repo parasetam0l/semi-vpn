@@ -69,48 +69,34 @@ enum RoutingRepairPhase: Equatable {
     }
 }
 
-/// Shown above the footer while the VPN is connected but macOS routes
-/// SemiVPN's browser proxy outside it.
+/// Shown while the VPN is connected but macOS routes SemiVPN's browser
+/// proxy outside it.
 struct RoutingRepairBanner: View {
     let blocksListedSites: Bool
     let phase: RoutingRepairPhase
     let onRepair: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "exclamationmark.shield.fill")
-                .font(.system(size: 20))
-                .foregroundStyle(Color.red.opacity(0.9))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Browser traffic is not using the VPN")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(blocksListedSites
-                     ? "macOS is not routing SemiVPN’s browser proxy through the VPN, so listed sites are blocked."
-                     : "macOS is not routing SemiVPN’s browser proxy through the VPN, so listed sites use your regular connection.")
-                    .font(.system(size: 11))
-                Text("macOS still matches the routing rule against an older copy of SemiVPN’s proxy. Repairing clears that record and restarts the macOS VPN service: it asks for your administrator password and briefly disconnects all VPNs.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(SemiTheme.textMuted)
-                if let note = note {
-                    Text(note)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(noteColor)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 12)
+        NoticeCard(
+            icon: "exclamationmark.shield.fill",
+            tint: .red,
+            title: "Websites aren’t using the VPN",
+            detail: (blocksListedSites
+                     ? "macOS routes SemiVPN’s browser proxy outside the VPN, so listed websites are blocked."
+                     : "macOS routes SemiVPN’s browser proxy outside the VPN, so listed websites use your regular connection.")
+                + " Repairing restarts the macOS VPN service: it asks for your administrator password and briefly disconnects all VPNs.",
+            note: note
+        ) {
             Button(action: onRepair) {
                 HStack(spacing: 6) {
-                    if phase.isBusy { ProgressView().controlSize(.small) }
+                    if phase.isBusy { ProgressView().controlSize(.mini) }
                     Text(buttonTitle)
                 }
             }
-            .buttonStyle(AccentButtonStyle())
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
             .disabled(phase.isBusy)
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 12)
-        .background(Color.red.opacity(0.12))
     }
 
     private var buttonTitle: String {
@@ -124,14 +110,9 @@ struct RoutingRepairBanner: View {
 
     private var note: String? {
         switch phase {
-        case .failed(let message): return "The VPN service could not be restarted: \(message)"
-        case .stillBroken: return "Still not routed through the VPN after the repair. As a workaround, use the All apps routing mode."
+        case .failed(let message): return "The VPN service couldn’t be restarted: \(message)"
+        case .stillBroken: return "Still outside the VPN after the repair. Until it’s fixed, use All Apps."
         default: return nil
         }
-    }
-
-    private var noteColor: Color {
-        if case .failed = phase { return .red }
-        return SemiTheme.amber
     }
 }

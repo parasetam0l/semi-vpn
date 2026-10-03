@@ -1,116 +1,160 @@
+import AppKit
 import SwiftUI
 
-/// Colors and button styles shared by the app's windows and sheets.
+/// SemiVPN's colors and shared building blocks. Surfaces and text use the
+/// system's adaptive colors, so the app follows light and dark mode; the
+/// cyan and violet come from the app icon.
 enum SemiTheme {
-    static let canvas = Color(red: 0.025, green: 0.035, blue: 0.095)
-    static let sidebar = Color(red: 0.045, green: 0.060, blue: 0.145)
-    static let panel = Color(red: 0.065, green: 0.085, blue: 0.19)
-    static let panelRaised = Color(red: 0.095, green: 0.125, blue: 0.255)
-    static let line = Color(red: 0.35, green: 0.55, blue: 1.0).opacity(0.18)
-    static let textMuted = Color.white.opacity(0.62)
-    static let cyan = Color(red: 0.12, green: 0.82, blue: 1.0)
-    static let violet = Color(red: 0.58, green: 0.28, blue: 1.0)
-    static let green = Color(red: 0.28, green: 0.88, blue: 0.58)
-    static let amber = Color(red: 1.0, green: 0.74, blue: 0.32)
-    static let accent = LinearGradient(colors: [cyan, violet], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static let cyan = Color(red: 0.10, green: 0.68, blue: 0.96)
+    static let violet = Color(red: 0.52, green: 0.30, blue: 0.98)
+    /// The tint of buttons, switches and selections.
+    static let brand = Color(red: 0.33, green: 0.42, blue: 0.98)
+    static let gradient = LinearGradient(colors: [cyan, violet], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static let green = Color(nsColor: .systemGreen)
+    static let amber = Color(nsColor: .systemOrange)
+
+    static let canvas = Color(nsColor: .windowBackgroundColor)
+    /// Grouped sections and rows.
+    static let panel = Color.primary.opacity(0.045)
+    static let panelRaised = Color.primary.opacity(0.08)
+    static let line = Color.primary.opacity(0.10)
+    static let textMuted = Color.secondary
 }
 
-struct AccentButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(SemiTheme.accent)
-                    .opacity(configuration.isPressed ? 0.78 : 1.0)
+/// A rounded group of rows, like a section in System Settings.
+struct SectionBox<Content: View>: View {
+    var title: String?
+    var footer: String?
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(.white.opacity(0.20), lineWidth: 1)
+            VStack(spacing: 0) {
+                content
             }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(SemiTheme.panel))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+            if let footer {
+                Text(footer)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+            }
+        }
     }
 }
 
-struct LargeAccentButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 15, weight: .bold, design: .rounded))
-            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.78 : 1.0))
-            .padding(.horizontal, 22)
-            .padding(.vertical, 13)
-            .background {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(SemiTheme.accent)
-                    .opacity(configuration.isPressed ? 0.78 : 1.0)
+/// One row of a `SectionBox`, with a divider above all but the first.
+struct SectionRow<Content: View>: View {
+    var first = false
+    var verticalPadding: CGFloat = 8
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if !first {
+                Rectangle().fill(SemiTheme.line).frame(height: 0.5).padding(.leading, 12)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(.white.opacity(0.22), lineWidth: 1)
+            HStack(spacing: 10) {
+                content
             }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .padding(.horizontal, 12)
+            .padding(.vertical, verticalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
-struct LargeDisconnectButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 15, weight: .bold, design: .rounded))
-            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.78 : 0.94))
-            .padding(.horizontal, 22)
-            .padding(.vertical, 13)
-            .background {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(SemiTheme.panelRaised.opacity(configuration.isPressed ? 0.65 : 0.92))
+/// Something that needs the user's attention, above the main content.
+struct NoticeCard<Actions: View>: View {
+    let icon: String
+    let tint: Color
+    let title: String
+    var detail: String?
+    var note: String?
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(Color.red.opacity(0.72), lineWidth: 1)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            if let note {
+                Text(note)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                actions
+            }
+            .controlSize(.small)
+            .padding(.top, 2)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(tint.opacity(0.11)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tint.opacity(0.30), lineWidth: 0.5))
     }
 }
 
-struct SecondaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
+/// The connection state as a shield in a circle: the icon's colors when
+/// connected, orange while changing, grey when off.
+struct StatusOrb: View {
+    let state: OrbState
+    var size: CGFloat = 76
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(isEnabled ? 1 : 0.5)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.72 : 0.92))
-            .padding(.horizontal, 13)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(SemiTheme.panelRaised.opacity(configuration.isPressed ? 0.65 : 0.92))
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(fill)
+            if state == .connected {
+                Circle()
+                    .strokeBorder(.white.opacity(0.35), lineWidth: 1)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(SemiTheme.cyan.opacity(0.32), lineWidth: 1)
-            }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.42, weight: .medium))
+                .foregroundStyle(state == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.white))
+        }
+        .frame(width: size, height: size)
+        .shadow(color: state == .connected ? SemiTheme.violet.opacity(0.35) : .clear, radius: size * 0.18, y: size * 0.06)
+    }
+
+    private var fill: AnyShapeStyle {
+        switch state {
+        case .connected: return AnyShapeStyle(SemiTheme.gradient)
+        case .changing: return AnyShapeStyle(SemiTheme.amber.gradient)
+        case .off: return AnyShapeStyle(SemiTheme.panelRaised)
+        }
+    }
+
+    private var symbol: String {
+        switch state {
+        case .connected: return "checkmark.shield.fill"
+        case .changing: return "shield.lefthalf.filled"
+        case .off: return "shield"
+        }
     }
 }
 
-struct DisconnectButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.72 : 0.94))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(SemiTheme.panelRaised.opacity(configuration.isPressed ? 0.65 : 0.92))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(Color.red.opacity(0.72), lineWidth: 1)
-            }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-    }
+/// The three looks of the status orb.
+enum OrbState {
+    case connected, changing, off
 }

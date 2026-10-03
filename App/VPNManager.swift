@@ -152,8 +152,22 @@ final class VPNManager: ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// For UI snapshots: starts nothing, reads nothing, stops nothing.
+    init(previewStatus: NEVPNStatus) {
+        isPreview = true
+        status = previewStatus
+        hasSavedConfiguration = true
+    }
+    #endif
+
+    /// A preview instance must never stop the real proxy helper.
+    private var isPreview = false
+
     deinit {
-        stopProxyHelper()
+        if !isPreview {
+            stopProxyHelper()
+        }
         if let statusObserver {
             NotificationCenter.default.removeObserver(statusObserver)
         }

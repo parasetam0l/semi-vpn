@@ -159,56 +159,35 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
 
 import SwiftUI
 
-/// Shown above the footer while the tunnel's system extension waits for the
-/// user's approval, needs a restart, or could not be installed.
+/// Shown while the tunnel's system extension waits for the user's approval,
+/// needs a restart, or could not be installed.
 struct SystemExtensionBanner: View {
     @ObservedObject var installer: SystemExtensionInstaller
 
     var body: some View {
-        if let content {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: content.icon)
-                    .font(.system(size: 20))
-                    .foregroundStyle(content.color)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(content.title).font(.system(size: 13, weight: .semibold))
-                    Text(content.detail)
-                        .font(.system(size: 11))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 12)
-                switch installer.state {
-                case .needsApproval:
-                    Button("Open System Settings") { SystemExtensionInstaller.openApprovalSettings() }
-                        .buttonStyle(AccentButtonStyle())
-                case .failed:
-                    Button("Try Again") { installer.activate() }
-                        .buttonStyle(AccentButtonStyle())
-                default:
-                    EmptyView()
-                }
-            }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 12)
-            .background(content.color.opacity(0.10))
-        }
-    }
-
-    private var content: (title: String, detail: String, icon: String, color: Color)? {
         switch installer.state {
         case .needsApproval:
-            return ("Allow SemiVPN’s network extension",
-                    "macOS needs your permission once to run SemiVPN’s VPN tunnel. In System Settings → General → Login Items & Extensions → Network Extensions, turn on SemiVPN.",
-                    "lock.shield", SemiTheme.amber)
+            NoticeCard(icon: "lock.shield", tint: SemiTheme.amber,
+                       title: "Allow SemiVPN’s network extension",
+                       detail: "macOS needs your permission once. In System Settings → General → Login Items & Extensions → Network Extensions, turn on SemiVPN.") {
+                Button("Open System Settings") { SystemExtensionInstaller.openApprovalSettings() }
+                    .buttonStyle(.borderedProminent)
+            }
         case .willCompleteAfterReboot:
-            return ("Restart to finish installing",
-                    "SemiVPN’s network extension is installed after the Mac restarts.",
-                    "arrow.clockwise.circle", SemiTheme.amber)
+            NoticeCard(icon: "arrow.clockwise.circle", tint: SemiTheme.amber,
+                       title: "Restart to finish installing",
+                       detail: "SemiVPN’s network extension is ready after the Mac restarts.") {
+                EmptyView()
+            }
         case .failed(let message):
-            return ("SemiVPN’s network extension could not be installed",
-                    message, "exclamationmark.triangle.fill", .red)
+            NoticeCard(icon: "exclamationmark.triangle.fill", tint: .red,
+                       title: "The network extension couldn’t be installed",
+                       detail: message) {
+                Button("Try Again") { installer.activate() }
+                    .buttonStyle(.borderedProminent)
+            }
         default:
-            return nil
+            EmptyView()
         }
     }
 }

@@ -168,7 +168,11 @@ if [[ "${1:-}" == "--install" ]]; then
         sleep 0.2
     done
 
-    ditto "$BUILD_APP" "$INSTALL_APP"
+    # Replace the contents, removing files the new build no longer has (a
+    # merge left the old TunnelProvider.appex behind and broke the seal),
+    # but keep the bundle itself: deleting an app looks to macOS like
+    # uninstalling it, along with its system extension.
+    rsync -a --delete "$BUILD_APP/" "$INSTALL_APP/"
     codesign --verify --deep --strict "$INSTALL_APP"
     /System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister -f "$INSTALL_APP/Contents/Resources/SemiProxy.app"
     open -n "$INSTALL_APP"

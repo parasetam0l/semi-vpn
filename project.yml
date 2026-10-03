@@ -54,7 +54,7 @@ targets:
         # Updates (Sparkle): the feed is attached to the latest published
         # GitHub release; see docs/RELEASING.md.
         SUFeedURL: https://github.com/parasetam0l/semi-vpn/releases/latest/download/appcast.xml
-        SUPublicEDKey: SPARKLE_PUBLIC_KEY_PENDING
+        SUPublicEDKey: llUvTZeN/RuWnDWy2Ow3QGt4mBgmVMw235ZLoyCzaRM=
         SUEnableAutomaticChecks: true
         SUScheduledCheckInterval: 86400
         # Always ask before installing.

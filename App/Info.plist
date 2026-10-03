@@ -41,7 +41,7 @@
 	<key>SUFeedURL</key>
 	<string>https://github.com/parasetam0l/semi-vpn/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>SPARKLE_PUBLIC_KEY_PENDING</string>
+	<string>llUvTZeN/RuWnDWy2Ow3QGt4mBgmVMw235ZLoyCzaRM=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>

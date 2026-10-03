@@ -99,6 +99,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         setupStatusItem()
         requestNotificationAuthorization()
         ExtensionMonitor.shared.start()
+        // Installs the tunnel's system extension, or replaces it after an
+        // app update (a no-op when that build is already active).
+        SystemExtensionInstaller.shared.activate()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if let window = self.findMainWindow() {

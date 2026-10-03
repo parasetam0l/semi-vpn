@@ -41,7 +41,7 @@ SemiVPN delivers unprecedented routing flexibility on macOS: connect system-wide
 - **SemiProxy Auxiliary Agent**: Lightweight background proxy helper (`com.semivpn.proxy`) registered with LaunchServices (`LSUIElement: true`) for seamless OS-level routing without Dock clutter.
 - **Modern SwiftUI Interface**: Clean dark-mode workspace organized into Overview, Routing, Browser, Profiles, and Diagnostics sections.
 - **One-Click Profile Scanner**: Automatically discovers `.ovpn` configuration profiles in your Downloads, Desktop, and Documents folders.
-- **Credentials and Keychain**: Prompts for `auth-user-pass` credentials and private-key passphrases, optionally remembers them in the Keychain, and hands profiles and secrets to the tunnel through a shared Keychain access group rather than the Network Extension preferences.
+- **Credentials and Keychain**: Prompts for `auth-user-pass` credentials and private-key passphrases, optionally remembers them in the Keychain, and hands profiles and secrets to the tunnel with each start request rather than through the Network Extension preferences, which are stored unencrypted on disk.
 - **Server-Driven Configuration**: Applies pushed routes (including split tunnels and `net_gateway` exclusions), DNS servers, search and split-DNS domains, topology, MTU, and `auth-token` reconnects.
 - **Integrated CLI**: Standalone `ovpn-cli` executable for testing profile handshakes and debugging connection issues without launching the UI.
 
@@ -83,7 +83,7 @@ SemiVPN is divided into modular subsystems across the core protocol library, sys
                │
                ▼ (Mapped via NEAppRule)
 ┌──────────────────────────────────────────────────────────┐
-│              TunnelProvider (App Extension)              │
+│            TunnelProvider (System Extension)             │
 │       NEPacketTunnelProvider ─── utun Network Bridge     │
 │                              │                           │
 │              ┌───────────────┴───────────────┐           │
@@ -115,7 +115,10 @@ Minimal C shim interfacing directly with OpenSSL 3:
 
 ### 3. TunnelProvider (`TunnelProvider/`)
 
-A macOS Network Extension (`NEPacketTunnelProvider`):
+A macOS Network Extension (`NEPacketTunnelProvider`), packaged as a **system extension** (`Contents/Library/SystemExtensions/com.semivpn.app.TunnelProvider.systemextension`):
+- Runs as root. The app installs it with `OSSystemExtensionRequest` at launch (the first time, macOS asks the user to allow it in System Settings → General → Login Items & Extensions) and replaces it after an app update.
+- Receives the profile and credentials in the options of each start the app requests, and keeps them in a root-only file in its container for on-demand starts. Credentials the user did not ask to remember are not stored, and a password the server rejects is removed.
+- Logs to the unified log: `log stream --predicate 'subsystem == "com.semivpn.tunnel"'`.
 - Connects the system virtual network interface (`utun`) to `SwiftOpenVPNCore`.
 - Configures routes, the tunnel address (subnet and net30/p2p topologies), DNS servers, search and split-DNS domains from the push, and sizes the MTU so encrypted packets fit the physical link.
 - Rebinds the transport when the physical network changes (NWPathMonitor) and after wake.
@@ -231,10 +234,12 @@ The recommended build workflow utilizes the automated development script:
 
 This script:
 1. Generates the Xcode project via `xcodegen`.
-2. Builds `SemiVPN.app`, `TunnelProvider.appex`, and `SemiProxy.app`.
+2. Builds `SemiVPN.app` with the `com.semivpn.app.TunnelProvider` system extension and `SemiProxy.app`, with a new build number (`BUILD_NUMBER`, default the Unix time).
 3. Stages and bundles OpenSSL 3 dylibs using `@rpath` addressing for self-contained execution.
 4. Signs all targets with your Apple Development identity and entitlements.
-5. Verifies code signatures and registers `SemiProxy` with `lsregister`.
+5. Verifies code signatures and entitlements, installs to `/Applications` (system extensions only install from there) and registers `SemiProxy` with `lsregister`.
+
+On first launch SemiVPN asks macOS to install its network extension; allow it in **System Settings → General → Login Items & Extensions → Network Extensions**. Later builds replace it without asking.
 
 ### Manual Xcode Build
 
@@ -308,7 +313,7 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 │   └── OpenVPNCLI/           # Headless ovpn-cli profile test executable
 ├── Tests/
 │   └── OpenVPNCoreTests/     # Unit tests for protocol wire formats, crypto, and framing
-└── TunnelProvider/           # NEPacketTunnelProvider app extension
+└── TunnelProvider/           # NEPacketTunnelProvider system extension
 ```
 
 ---
@@ -336,10 +341,11 @@ SemiVPN has been validated byte-for-byte against:
 
 ## Distribution & Signing
 
-`TunnelProvider` is packaged as a Network Extension **app extension** (`.appex`). macOS only accepts app-extension NE providers for development builds and Mac App Store distribution ([TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment)). A development build runs only on the Macs registered to the signing team:
+`TunnelProvider` is packaged as a Network Extension **system extension**, the packaging Apple requires for distribution outside the Mac App Store ([TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment)):
 
-- **Mac App Store**: sign with App Store distribution profiles that include the `packet-tunnel-provider` entitlement and the shared keychain group, then submit through App Store Connect. App Review Guideline 5.4 allows VPN apps only from developers **enrolled as an organization**, so this route needs an organization membership.
-- **Developer ID (outside the App Store)**: available to individual and organization memberships. Apple requires Network Extension providers to be packaged as a **System Extension** (`packet-tunnel-provider-systemextension`, activated with `OSSystemExtensionRequest`). That packaging is not implemented yet; the existing provider code can be reused, but the target type, entitlements and activation flow have to change before a notarized Developer ID build will work.
+- **Development builds** (`build-dev.sh`, Apple Development signing) run on the Macs registered to the signing team and use the `packet-tunnel-provider` entitlement value.
+- **Developer ID (outside the App Store)**: available to individual and organization memberships. The Release configuration uses `packet-tunnel-provider-systemextension`, which Developer ID requires; sign the app and the extension with a Developer ID Application certificate and Developer ID provisioning profiles that include the Network Extensions and System Extension capabilities, then notarize.
+- **Mac App Store**: App Review Guideline 5.4 allows VPN apps only from developers **enrolled as an organization**.
 
 All targets build with the Hardened Runtime, which notarization requires.
 

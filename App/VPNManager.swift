@@ -219,6 +219,9 @@ final class VPNManager: ObservableObject {
         }
 
         let appRules = try makeAppRules(for: selection)
+        // The tunnel provider is a system extension: it must be installed
+        // (and, the first time, allowed by the user) before it can start.
+        try await SystemExtensionInstaller.shared.ensureActive()
 
         let profile: OVPNProfile
         do {

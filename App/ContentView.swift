@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var vpnManager: VPNManager
     @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
+    @ObservedObject private var systemExtension = SystemExtensionInstaller.shared
     @State private var routingRepairPhase: RoutingRepairPhase = .idle
     @State private var profiles: [String] = []
     @State private var selectedProfile: String?
@@ -63,6 +64,7 @@ struct ContentView: View {
                     .fill(SemiTheme.line)
                     .frame(height: 1)
                 sectionContent
+                SystemExtensionBanner(installer: systemExtension)
                 if extensionMonitor.browserRoutingBroken || routingRepairPhase.isBusy {
                     RoutingRepairBanner(
                         blocksListedSites: extensionMonitor.blocksListedSites,

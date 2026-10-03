@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 DERIVED_DATA="$PROJECT_ROOT/.build/DerivedData"
 BUILD_APP="$DERIVED_DATA/Build/Products/Debug/SemiVPN.app"
-BUILD_EXTENSION="$BUILD_APP/Contents/PlugIns/TunnelProvider.appex"
+BUILD_EXTENSION="$BUILD_APP/Contents/Library/SystemExtensions/com.semivpn.app.TunnelProvider.systemextension"
 INSTALL_APP="/Applications/SemiVPN.app"
 # Signing team: DEVELOPMENT_TEAM from the environment, else the one in
 # project.yml. The team is never guessed from the keychain or the installed
@@ -99,23 +99,39 @@ codesign --verify --deep --strict "$BUILD_APP"
 
 # macOS refuses to launch a product whose entitlements its provisioning
 # profile does not grant, e.g. an unexpanded $(AppIdentifierPrefix).
-for product in "$BUILD_APP" "$BUILD_EXTENSION"; do
+check_entitlements() { # product expected-string...
+    local product="$1"; shift
+    local entitlements
     entitlements="$(codesign -d --entitlements - --xml "$product" 2>/dev/null | plutil -convert xml1 -o - - 2>/dev/null || true)"
-    if [[ "$entitlements" == *'$('* || "$entitlements" != *"<string>$EXPECTED_TEAM_ID.com.semivpn.shared</string>"* ]]; then
+    local ok=1
+    [[ "$entitlements" == *'$('* ]] && ok=0
+    for expected in "$@"; do
+        [[ "$entitlements" == *"$expected"* ]] || ok=0
+    done
+    if [[ $ok -eq 0 ]]; then
         printf 'Unexpected entitlements in %s:\n%s\n' "$product" "$entitlements" >&2
         exit 1
     fi
-done
+}
+check_entitlements "$BUILD_APP" \
+    "<string>$EXPECTED_TEAM_ID.com.semivpn.shared</string>" \
+    "<key>com.apple.developer.system-extension.install</key>" \
+    "<string>packet-tunnel-provider</string>"
+check_entitlements "$BUILD_EXTENSION" \
+    "<string>$EXPECTED_TEAM_ID.com.semivpn.app</string>" \
+    "<string>packet-tunnel-provider</string>"
 
-for debug_dylib in \
+# The OpenSSL libraries must be the bundled copies (the system extension has
+# no debug dylib).
+for binary in \
     "$BUILD_APP/Contents/MacOS/SemiVPN.debug.dylib" \
-    "$BUILD_APP/Contents/PlugIns/TunnelProvider.appex/Contents/MacOS/TunnelProvider.debug.dylib"; do
-    [[ -f "$debug_dylib" ]] || {
-        printf 'Missing debug dylib: %s\n' "$debug_dylib" >&2
+    "$BUILD_EXTENSION/Contents/MacOS/com.semivpn.app.TunnelProvider"; do
+    [[ -f "$binary" ]] || {
+        printf 'Missing binary: %s\n' "$binary" >&2
         exit 1
     }
-    if otool -L "$debug_dylib" | grep -Eq '/(opt/homebrew|usr/local)/(opt|Cellar)/openssl'; then
-        printf 'Debug dylib still links to Homebrew OpenSSL: %s\n' "$debug_dylib" >&2
+    if otool -L "$binary" | grep -Eq '/(opt/homebrew|usr/local)/(opt|Cellar)/openssl'; then
+        printf 'Still links to Homebrew OpenSSL: %s\n' "$binary" >&2
         exit 1
     fi
 done

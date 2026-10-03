@@ -10,6 +10,13 @@ settings:
     # with your own team, build with DEVELOPMENT_TEAM=<team ID> and change
     # bundleIdPrefix and the bundle identifiers below.
     DEVELOPMENT_TEAM: P7V7795SS9
+    # The Network Extension entitlement value of the app and the tunnel
+    # system extension: development signing uses the plain value, Developer
+    # ID requires the -systemextension one.
+    SEMIVPN_NE_PROVIDER: packet-tunnel-provider
+  configs:
+    Release:
+      SEMIVPN_NE_PROVIDER: packet-tunnel-provider-systemextension
 packages:
   OpenVPNCore:
     path: .
@@ -40,6 +47,10 @@ targets:
       - package: OpenVPNCore
       - target: TunnelProvider
         embed: true
+        # System extensions must sit in Contents/Library/SystemExtensions.
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/SystemExtensions
       - target: SemiProxy
         embed: true
     settings:
@@ -71,17 +82,20 @@ targets:
         script: '"$SRCROOT/Scripts/stamp-extension.sh"'
         basedOnDependencyAnalysis: false
   TunnelProvider:
-    type: app-extension
+    type: system-extension
     platform: macOS
     sources:
       - TunnelProvider/TunnelProvider.swift
+      - TunnelProvider/main.swift
       - Shared
     dependencies:
       - package: OpenVPNCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.app.TunnelProvider
-        PRODUCT_NAME: TunnelProvider
+        # A system extension bundle is named after its identifier.
+        PRODUCT_NAME: com.semivpn.app.TunnelProvider
+        PRODUCT_MODULE_NAME: TunnelProvider
         CODE_SIGN_ENTITLEMENTS: TunnelProvider/TunnelProvider.entitlements
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: TunnelProvider/Info.plist

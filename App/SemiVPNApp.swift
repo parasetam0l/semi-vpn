@@ -267,6 +267,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         let oldStatus = previousStatus
         previousStatus = status
         guard let oldStatus else { return }
+        // Reconnecting to apply changes isn't news: no Disconnected, and so
+        // no Connected, notification.
+        if AppModel.shared.vpn.isReconnecting { return }
         if status == .connected {
             if !wasConnected && oldStatus != .invalid {
                 postNotification(title: "Connected", body: selectedConnectionName() + " is connected")

@@ -92,7 +92,7 @@ final class AppModel: ObservableObject {
     /// Connect starts before Network Extension reports `.connecting`; show
     /// that state right away instead of a stale "Not connected".
     var displayedStatus: NEVPNStatus {
-        if connecting && (vpn.status == .disconnected || vpn.status == .invalid) {
+        if (connecting || vpn.isReconnecting) && (vpn.status == .disconnected || vpn.status == .invalid) {
             return .connecting
         }
         return vpn.status
@@ -105,14 +105,31 @@ final class AppModel: ObservableObject {
         return status == .connected || status == .connecting || status == .reasserting
     }
 
-    /// Profile, routing mode and apps can't change while the tunnel is up or
-    /// changing; websites can.
-    var configurationLocked: Bool {
-        connecting || vpn.status == .connected || vpn.status == .connecting
-            || vpn.status == .reasserting || vpn.status == .disconnecting
+    /// What differs from the running tunnel: "profile", "route" or "apps".
+    /// macOS applies these only when the tunnel starts again (reconnect).
+    var pendingChanges: [String] {
+        guard isTunnelActive, !vpn.isReconnecting, let applied = vpn.appliedRouting,
+              let selectedProfile else { return [] }
+        let current = SharedConfig.AppliedRouting(profileName: selectedProfile, routingMode: routingMode,
+                                                  appIdentifiers: Array(selectedApps))
+        var changes: [String] = []
+        if applied.profileName != current.profileName { changes.append("profile") }
+        if applied.routingMode != current.routingMode {
+            changes.append("route")
+        } else if applied.appIdentifiers != current.appIdentifiers {
+            changes.append("apps")
+        }
+        return changes
+    }
+
+    /// The profile the running tunnel uses, which differs from the selected
+    /// one until a reconnect.
+    var connectedProfile: String? {
+        isTunnelActive ? vpn.appliedRouting?.profileName : nil
     }
 
     var statusTitle: String {
+        if vpn.isReconnecting { return "Reconnecting…" }
         switch displayedStatus {
         case .connected: return "Connected"
         case .connecting: return "Connecting…"
@@ -162,7 +179,7 @@ final class AppModel: ObservableObject {
     }
 
     func chooseProfile(_ name: String) {
-        guard profiles.contains(name), name != selectedProfile, !configurationLocked else { return }
+        guard profiles.contains(name), name != selectedProfile else { return }
         selectedProfile = name
         saveCurrentSelection()
         AppLogger.log("selected profile: \(name)")
@@ -267,10 +284,8 @@ final class AppModel: ObservableObject {
         if SharedConfig.saveProfile(text, name: name + ".ovpn") {
             ProfileCatalog.shared.invalidate()
             profiles = SharedConfig.profileNames()
-            if !configurationLocked {
-                selectedProfile = name + ".ovpn"
-                saveCurrentSelection()
-            }
+            selectedProfile = name + ".ovpn"
+            saveCurrentSelection()
         } else {
             Self.showImportError("The profile couldn’t be stored.")
         }
@@ -339,7 +354,7 @@ final class AppModel: ObservableObject {
     // MARK: - Routing
 
     func setRoutingMode(_ mode: SharedConfig.RoutingMode) {
-        guard mode != routingMode, !configurationLocked else { return }
+        guard mode != routingMode else { return }
         routingMode = mode
         saveCurrentSelection()
     }
@@ -353,7 +368,6 @@ final class AppModel: ObservableObject {
     }
 
     func setApp(_ app: AppEntry, enabled: Bool) {
-        guard !configurationLocked else { return }
         if enabled {
             selectedApps.insert(app.bundleIdentifier)
         } else {
@@ -380,7 +394,6 @@ final class AppModel: ObservableObject {
     var enabledDomainCount: Int { domains.count - inactiveDomains.intersection(domains).count }
 
     func setApps(_ identifiers: Set<String>, enabled: Bool) {
-        guard !configurationLocked else { return }
         for identifier in identifiers {
             guard let app = addedApps[identifier] else { continue }
             if enabled {
@@ -394,7 +407,6 @@ final class AppModel: ObservableObject {
     }
 
     func removeApps(_ identifiers: Set<String>) {
-        guard !configurationLocked else { return }
         for identifier in identifiers {
             guard let app = addedApps.removeValue(forKey: identifier) else { continue }
             selectedApps.remove(app.bundleIdentifier)
@@ -435,7 +447,7 @@ final class AppModel: ObservableObject {
     }
 
     func showAppPicker() {
-        guard !isPreview, !configurationLocked else { return }
+        guard !isPreview else { return }
         let panel = NSOpenPanel()
         panel.title = "Add Apps"
         panel.message = "Choose the apps that use the VPN. SemiVPN only considers the apps you add here."
@@ -542,7 +554,7 @@ final class AppModel: ObservableObject {
     }
 
     func importApps() {
-        guard !isPreview, !configurationLocked else { return }
+        guard !isPreview else { return }
         openListFile(title: "Import Apps") { [weak self] text in
             guard let self else { return }
             let parsed = RoutingListFile.apps(from: text)
@@ -681,6 +693,25 @@ final class AppModel: ObservableObject {
     func disconnect() {
         guard !isPreview else { return }
         vpn.stop()
+    }
+
+    /// Applies pending changes: stops the tunnel and starts it again with
+    /// the current profile, route and apps.
+    func reconnect() {
+        guard !isPreview, isTunnelActive, !vpn.isReconnecting else { return }
+        connectError = nil
+        AppLogger.log("reconnect to apply: \(pendingChanges.joined(separator: ", "))")
+        Task {
+            do {
+                try await vpn.reconnect()
+            } catch VPNManager.StartError.credentialsRequired {
+                AppDelegate.shared?.showWindow()
+            } catch {
+                connectError = "SemiVPN couldn’t reconnect: \(error.localizedDescription)"
+                AppLogger.log("reconnect failed: \(error)")
+                AppDelegate.shared?.showWindow()
+            }
+        }
     }
 
     // MARK: - Routing repair
@@ -825,8 +856,25 @@ final class AppModel: ObservableObject {
         apply(SharedConfig.loadDomainConfiguration())
     }
 
+    private var appRulesUpdate: Task<Void, Never>?
+
+    /// After app changes while connected, writes the new app rules into the
+    /// running configuration (once the changes settle). macOS applies them
+    /// only when the tunnel restarts (Apple DTS, macOS 12); the Reconnect
+    /// notice stays until then.
+    private func scheduleAppRulesUpdate() {
+        guard !isPreview, isTunnelActive else { return }
+        appRulesUpdate?.cancel()
+        appRulesUpdate = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            await vpn.saveAppRulesToRunningConfiguration()
+        }
+    }
+
     private func saveCurrentSelection() {
         guard !isPreview, let selectedProfile else { return }
+        defer { scheduleAppRulesUpdate() }
         vpn.saveSelection(
             profileName: selectedProfile,
             // Keep the app choices while switching modes: All apps and
@@ -860,11 +908,13 @@ final class AppModel: ObservableObject {
         var diagnostics = Diagnostics()
         var listKind: ListKind = .websites
         var listSearch = ""
+        /// The running tunnel's routing; differs from the above for pending changes.
+        var appliedRouting: SharedConfig.AppliedRouting?
     }
 
     /// Sample data for UI snapshots; touches nothing on the system.
     init(preview: Preview) {
-        vpn = VPNManager(previewStatus: preview.status)
+        vpn = VPNManager(previewStatus: preview.status, appliedRouting: preview.appliedRouting)
         isPreview = true
         profiles = preview.profiles.map(\.name)
         previewMeta = Dictionary(uniqueKeysWithValues: preview.profiles.map { ($0.name, $0.meta) })

@@ -183,12 +183,6 @@ private struct ProfilesSettings: View {
                 Button("Find Profiles on This Mac…") { showScan = true }
                 Spacer()
             }
-            .disabled(model.configurationLocked)
-            if model.configurationLocked {
-                Text("Disconnect to add, switch or delete profiles.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
         }
         .sheet(isPresented: $showScan) {
             ProfileScanSheet { urls in model.importProfiles(urls) }
@@ -235,7 +229,6 @@ private struct ProfilesSettings: View {
             } else {
                 Button("Use") { model.chooseProfile(name) }
                     .controlSize(.small)
-                    .disabled(model.configurationLocked)
             }
             if let request = model.credentialRequest(for: name) {
                 Button {
@@ -255,7 +248,6 @@ private struct ProfilesSettings: View {
             }
             .buttonStyle(.borderless)
             .help("Delete profile")
-            .disabled(model.configurationLocked && inUse)
         }
     }
 }

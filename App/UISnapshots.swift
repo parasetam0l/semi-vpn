@@ -40,6 +40,19 @@ enum UISnapshots {
                 preview.listSearch = "status.example"
                 return window(AppModel(preview: preview))
             },
+            Screen(name: "window-pending-apps", width: 400, height: 760) {
+                var preview = sample(status: .connected, mode: .selectedAppsAndBrowser, list: .apps)
+                // The tunnel runs with one app fewer than now switched on.
+                let enabled = preview.apps.filter(\.enabled).map(\.entry.bundleIdentifier)
+                preview.appliedRouting = .init(profileName: "gobritanya.ovpn", routingMode: .selectedAppsAndBrowser,
+                                               appIdentifiers: Array(enabled.dropFirst()))
+                return window(AppModel(preview: preview))
+            },
+            Screen(name: "menubar-pending-profile-route", width: 340) {
+                var preview = sample(status: .connected, mode: .selectedAppsAndBrowser)
+                preview.appliedRouting = .init(profileName: "nyks-office.ovpn", routingMode: .browserOnly, appIdentifiers: [])
+                return AnyView(MenuBarPanel().environmentObject(AppModel(preview: preview)))
+            },
             Screen(name: "window-connecting-all-apps", width: 400, height: 520) {
                 window(AppModel(preview: sample(status: .connecting, mode: .allApps)))
             },

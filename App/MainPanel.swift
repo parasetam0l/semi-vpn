@@ -17,6 +17,7 @@ struct MainWindowView: View {
             } else {
                 ConnectionHeader(style: .window)
                 ConnectionChoices(style: .window)
+                PendingChangesNotice()
                 if model.shownListKind == nil {
                     AllTrafficNote()
                 } else {
@@ -79,6 +80,7 @@ struct MenuBarPanel: View {
             } else {
                 ConnectionHeader(style: .menuBar)
                 ConnectionChoices(style: .menuBar)
+                PendingChangesNotice()
                 if !model.listKinds.isEmpty {
                     SectionBox {
                         ForEach(Array(model.listKinds.enumerated()), id: \.element) { index, kind in
@@ -217,7 +219,7 @@ struct ConnectionHeader: View {
     }
 
     private var subtitle: String {
-        guard let profile = model.selectedProfile else { return "Choose a profile" }
+        guard let profile = model.connectedProfile ?? model.selectedProfile else { return "Choose a profile" }
         let meta = model.profileMeta(profile)
         return "\(meta.displayName) · \(meta.host)"
     }
@@ -265,9 +267,7 @@ struct ConnectionChoices: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        SectionBox(footer: style == .window
-                   ? (model.isTunnelActive ? "Disconnect to change the profile or route." : model.routingMode.choiceDetail)
-                   : nil) {
+        SectionBox(footer: style == .window && model.pendingChanges.isEmpty ? model.routingMode.choiceDetail : nil) {
             SectionRow(first: true) {
                 Text("Profile")
                     .lineLimit(1)
@@ -291,7 +291,6 @@ struct ConnectionChoices: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .fixedSize(horizontal: style == .window, vertical: false)
-                .disabled(model.configurationLocked)
             }
         }
     }
@@ -321,7 +320,6 @@ struct ConnectionChoices: View {
             Text(model.selectedProfile.map { model.profileMeta($0).displayName } ?? "None")
         }
         .fixedSize()
-        .disabled(model.configurationLocked)
     }
 }
 
@@ -352,11 +350,9 @@ private struct RoutedList: View {
     @EnvironmentObject private var model: AppModel
     @State private var selection: Set<String> = []
     @State private var addError: String?
-    @State private var showLockedHint = false
 
     private var kind: AppModel.ListKind { model.shownListKind ?? .websites }
     private var query: String { model.listSearch }
-    private var locked: Bool { kind == .apps && model.configurationLocked }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -417,19 +413,9 @@ private struct RoutedList: View {
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
             if kind == .apps {
                 Button {
-                    if locked {
-                        showLockedHint = true
-                    } else {
-                        model.showAppPicker()
-                    }
+                    model.showAppPicker()
                 } label: {
                     Label("Add Apps…", systemImage: "plus")
-                }
-                .popover(isPresented: $showLockedHint, arrowEdge: .bottom) {
-                    LockedAppsHint {
-                        showLockedHint = false
-                        model.disconnect()
-                    }
                 }
             }
         }
@@ -503,7 +489,7 @@ private struct RoutedList: View {
         List(selection: $selection) {
             if kind == .apps {
                 ForEach(filteredApps) { app in
-                    AppListRow(app: app, locked: locked) { request(remove: [app.bundleIdentifier]) }
+                    AppListRow(app: app) { request(remove: [app.bundleIdentifier]) }
                         .tag(app.bundleIdentifier)
                 }
             } else {
@@ -523,14 +509,11 @@ private struct RoutedList: View {
         .contextMenu(forSelectionType: String.self) { items in
             if !items.isEmpty {
                 Button("Turn On") { setEnabled(items, true) }
-                    .disabled(locked)
                 Button("Turn Off") { setEnabled(items, false) }
-                    .disabled(locked)
                 Divider()
                 Button(items.count == 1 ? "Remove…" : "Remove \(items.count)…", role: .destructive) {
                     request(remove: items)
                 }
-                .disabled(locked)
             }
         }
         .onDeleteCommand {
@@ -571,13 +554,10 @@ private struct RoutedList: View {
             Spacer()
             Menu {
                 Button("Turn All On") { setEnabled(allIdentifiers, true) }
-                    .disabled(locked)
                 Button("Turn All Off") { setEnabled(allIdentifiers, false) }
-                    .disabled(locked)
                 Divider()
                 if kind == .apps {
                     Button("Import Apps…", action: model.importApps)
-                        .disabled(locked)
                     Button("Export Apps…", action: model.exportApps)
                         .disabled(model.addedApps.isEmpty)
                 } else {
@@ -601,8 +581,7 @@ private struct RoutedList: View {
             ? "\(model.enabledAppCount) of \(model.addedApps.count) on"
             : "\(model.enabledDomainCount) of \(model.domains.count) on"
         let selected = selection.count > 1 ? " · \(selection.count) selected" : ""
-        let lockedNote = locked ? " · disconnect to change" : ""
-        return counts + selected + lockedNote
+        return counts + selected
     }
 
     private var allIdentifiers: Set<String> {
@@ -618,7 +597,7 @@ private struct RoutedList: View {
     }
 
     private func request(remove items: Set<String>) {
-        guard !items.isEmpty, !locked else { return }
+        guard !items.isEmpty else { return }
         let kind = kind
         model.confirmRemoval(kind, items) {
             if kind == .apps {
@@ -634,11 +613,9 @@ private struct RoutedList: View {
 /// One app: icon, name, and its switch.
 private struct AppListRow: View {
     let app: AppEntry
-    let locked: Bool
     let onRemove: () -> Void
     @EnvironmentObject private var model: AppModel
     @State private var hovering = false
-    @State private var showLockedHint = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -648,30 +625,16 @@ private struct AppListRow: View {
             Text(app.name)
                 .lineLimit(1)
             Spacer(minLength: 6)
-            if hovering && !locked {
+            if hovering {
                 RemoveButton(action: onRemove)
             }
-            // While connected the switch stays clickable, explains why it
-            // doesn't change, and stays as it was.
             Toggle(app.name, isOn: Binding(
                 get: { model.isAppEnabled(app) },
-                set: { enabled in
-                    if locked {
-                        showLockedHint = true
-                    } else {
-                        model.setApp(app, enabled: enabled)
-                    }
-                }
+                set: { model.setApp(app, enabled: $0) }
             ))
             .toggleStyle(.switch)
             .controlSize(.mini)
             .labelsHidden()
-            .popover(isPresented: $showLockedHint, arrowEdge: .trailing) {
-                LockedAppsHint(title: "Disconnect to change apps") {
-                    showLockedHint = false
-                    model.disconnect()
-                }
-            }
         }
         .padding(.vertical, 1)
         .contentShape(Rectangle())
@@ -715,29 +678,34 @@ private struct WebsiteListRow: View {
     }
 }
 
-/// Shown by Add Apps… and the app switches while connected: the app rules
-/// are fixed until the VPN disconnects.
-private struct LockedAppsHint: View {
-    var title = "Disconnect to add apps"
-    let onDisconnect: () -> Void
+/// Changes made while connected (profile, route, apps) and the button
+/// that applies them: macOS uses them only when the tunnel starts again.
+private struct PendingChangesNotice: View {
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-            Text("Apps can’t be added or changed while the VPN is connected.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Disconnect", role: .destructive, action: onDisconnect)
-                    .buttonStyle(.bordered)
-                    .tint(.red)
+        let changes = model.pendingChanges
+        if !changes.isEmpty {
+            NoticeCard(
+                icon: "arrow.triangle.2.circlepath",
+                tint: SemiTheme.brand,
+                title: "Reconnect to use the new \(Self.describe(changes))",
+                detail: "Apps that use the VPN lose their connection for a few seconds."
+            ) {
+                Button("Reconnect", action: model.reconnect)
+                    .buttonStyle(.borderedProminent)
+                    .tint(SemiTheme.brand)
             }
         }
-        .padding(14)
-        .frame(width: 260)
+    }
+
+    private static func describe(_ changes: [String]) -> String {
+        let names = changes.map { $0 == "apps" ? "app list" : $0 }
+        switch names.count {
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        default: return names.dropLast().joined(separator: ", ") + " and " + names.last!
+        }
     }
 }
 

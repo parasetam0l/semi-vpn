@@ -147,25 +147,91 @@ struct BrowserExtensionPanel: View {
     }
 }
 
+extension ExtensionMonitor {
+    enum Summary {
+        case updateNeeded, active, browserClosed, notDetected, notSetUp
+
+        var color: Color {
+            switch self {
+            case .active: return SemiTheme.green
+            case .updateNeeded: return SemiTheme.amber
+            case .browserClosed, .notDetected, .notSetUp: return SemiTheme.textMuted
+            }
+        }
+    }
+
+    var summary: Summary {
+        if !profilesNeedingUpdate.isEmpty { return .updateNeeded }
+        if profiles.contains(where: \.isActive) { return .active }
+        if !profiles.isEmpty { return .browserClosed }
+        return isPrepared ? .notDetected : .notSetUp
+    }
+}
+
 /// The extension's state in one word: active, update needed, not set up…
 struct ExtensionStatusPill: View {
     @ObservedObject var monitor: ExtensionMonitor
 
     var body: some View {
-        let (text, color): (String, Color) = {
-            if !monitor.profilesNeedingUpdate.isEmpty { return ("Update needed", SemiTheme.amber) }
-            if monitor.profiles.contains(where: \.isActive) { return ("Active", SemiTheme.green) }
-            if !monitor.profiles.isEmpty { return ("Browser closed", SemiTheme.textMuted) }
-            return (monitor.isPrepared ? "Not detected" : "Not set up", SemiTheme.textMuted)
+        let summary = monitor.summary
+        let text: String = {
+            switch summary {
+            case .updateNeeded: return "Update needed"
+            case .active: return "Active"
+            case .browserClosed: return "Browser closed"
+            case .notDetected: return "Not detected"
+            case .notSetUp: return "Not set up"
+            }
         }()
         HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(color)
+            Circle().fill(summary.color).frame(width: 6, height: 6)
+            Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(summary.color)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Capsule().fill(color.opacity(0.12)))
+        .background(Capsule().fill(summary.color.opacity(0.12)))
         .fixedSize()
+    }
+}
+
+/// The extension's state as a button beside the website search field,
+/// where the app list has Add Apps…; it opens Settings → Browser.
+struct ExtensionStatusButton: View {
+    @ObservedObject var monitor: ExtensionMonitor
+
+    var body: some View {
+        let summary = monitor.summary
+        Button {
+            SettingsWindowController.shared.show(.browser)
+        } label: {
+            Label {
+                Text(title(summary))
+            } icon: {
+                Image(systemName: "puzzlepiece.extension.fill")
+                    .foregroundStyle(summary == .notSetUp || summary == .notDetected ? SemiTheme.amber : summary.color)
+            }
+        }
+        .fixedSize()
+        .help(help(summary))
+    }
+
+    private func title(_ summary: ExtensionMonitor.Summary) -> String {
+        switch summary {
+        case .updateNeeded: return "Update…"
+        case .active: return "Active"
+        case .browserClosed: return "Idle"
+        case .notDetected, .notSetUp: return "Set Up…"
+        }
+    }
+
+    private func help(_ summary: ExtensionMonitor.Summary) -> String {
+        let browsers = monitor.profiles.filter(\.isActive).map(\.label).joined(separator: ", ")
+        switch summary {
+        case .active: return "The browser extension is active in \(browsers). Click for its settings."
+        case .updateNeeded: return "A browser runs an older version of the extension. Click to see how to update it."
+        case .browserClosed: return "The browser extension is set up, but no browser with it is running. Click for its settings."
+        case .notDetected, .notSetUp: return "Websites use the VPN only in Chromium browsers with SemiVPN’s extension. Click to set it up."
+        }
     }
 }
 
@@ -231,78 +297,6 @@ struct ExtensionProfileRow: View {
         case .updateNeeded: return SemiTheme.amber
         case .outdatedIdle: return SemiTheme.textMuted
         }
-    }
-}
-
-/// The extension's state above the window's website list, which only
-/// Chromium browsers with the extension send through SemiVPN; the gear
-/// opens the Browser tab of Settings.
-struct BrowserExtensionCard: View {
-    @ObservedObject var monitor: ExtensionMonitor
-    /// More profiles are summed up in one line.
-    private static let shownProfiles = 2
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "puzzlepiece.extension")
-                    .foregroundStyle(.secondary)
-                Text("Browser extension")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                ExtensionStatusPill(monitor: monitor)
-                Button(action: openSettings) {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("Browser extension settings")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            if monitor.profiles.isEmpty {
-                divider
-                HStack(spacing: 10) {
-                    Text(monitor.isPrepared
-                         ? "Not detected in a browser yet. Finish the setup, or open the browser if it is closed."
-                         : "Set it up to send these websites through SemiVPN in Chrome, Edge, Brave and other Chromium browsers.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button(monitor.isPrepared ? "Finish Setup…" : "Set Up…", action: openSettings)
-                        .controlSize(.small)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            } else {
-                ForEach(monitor.profiles.prefix(Self.shownProfiles)) { profile in
-                    divider
-                    ExtensionProfileRow(monitor: monitor, profile: profile)
-                }
-                if monitor.profiles.count > Self.shownProfiles {
-                    divider
-                    Button(action: openSettings) {
-                        Text("\(monitor.profiles.count - Self.shownProfiles) more in Settings")
-                            .font(.system(size: 11))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                }
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(SemiTheme.panel))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
-    }
-
-    private var divider: some View {
-        Rectangle().fill(SemiTheme.line).frame(height: 0.5).padding(.leading, 12)
-    }
-
-    private func openSettings() {
-        SettingsWindowController.shared.show(.browser)
     }
 }
 

@@ -133,12 +133,15 @@ enum ChromeExtensionInstaller {
         NSWorkspace.shared.activateFileViewerSelecting([directoryURL])
     }
 
-    static func openChromeExtensionSettings() {
-        guard let url = URL(string: "chrome://extensions") else { return }
-        guard let chromeURL = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: "com.google.Chrome"
-        ) else {
+    /// Opens chrome://extensions in Google Chrome. Launch Services can take
+    /// several seconds to hand the URL over, so callers should not issue
+    /// another request until `completion` runs (on the main queue, with an
+    /// error message on failure); each request opens a tab.
+    static func openChromeExtensionSettings(completion: @escaping (String?) -> Void = { _ in }) {
+        guard let url = URL(string: "chrome://extensions"),
+              let chromeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") else {
             AppLogger.log("Google Chrome is not installed; cannot open extension settings")
+            completion("Google Chrome is not installed.")
             return
         }
 
@@ -153,6 +156,9 @@ enum ChromeExtensionInstaller {
         ) { _, error in
             if let error {
                 AppLogger.log("Could not open Chrome extension settings: \(error.localizedDescription)")
+            }
+            DispatchQueue.main.async {
+                completion(error.map { "Could not open Chrome: \($0.localizedDescription)" })
             }
         }
     }

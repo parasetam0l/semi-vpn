@@ -42,6 +42,7 @@ struct ContentView: View {
     @State private var chromeExtensionReady = false
     @State private var chromeExtensionError: String?
     @State private var chromeExtensionDirectory: URL?
+    @State private var openingChromeSetup = false
     @State private var tunnelRegistered = false
     @State private var perAppConfigSaved = false
     @State private var vpnConfigSaved = false
@@ -257,8 +258,11 @@ struct ContentView: View {
     }
 
     private struct SecondaryButtonStyle: ButtonStyle {
+        @Environment(\.isEnabled) private var isEnabled
+
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
+                .opacity(isEnabled ? 1 : 0.5)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(configuration.isPressed ? 0.72 : 0.92))
                 .padding(.horizontal, 13)
@@ -2111,7 +2115,9 @@ struct ContentView: View {
                 Image(systemName: chromeExtensionReady ? "checkmark.circle.fill" : "circle.dashed")
                     .foregroundStyle(chromeExtensionReady ? Color.green : Color.secondary)
                 Button(chromeExtensionReady ? "Re-sync / Update" : "Prepare") {
-                    prepareChromeExtension()
+                    // First-time preparation continues in Chrome; a re-sync
+                    // only refreshes the folder.
+                    prepareChromeExtension(thenOpenChrome: !chromeExtensionReady)
                 }
                 .buttonStyle(SecondaryButtonStyle())
                 .controlSize(.small)
@@ -2127,11 +2133,12 @@ struct ContentView: View {
                 .foregroundStyle(SemiTheme.textMuted)
                 .lineLimit(2)
             HStack(spacing: 8) {
-                Button("Open Chrome setup") {
-                    ChromeExtensionInstaller.openChromeExtensionSettings()
+                Button(openingChromeSetup ? "Opening Chrome…" : "Open Chrome setup") {
+                    openChromeSetup()
                 }
                 .buttonStyle(SecondaryButtonStyle())
                 .controlSize(.small)
+                .disabled(openingChromeSetup)
                 Button("Reveal folder") {
                     ChromeExtensionInstaller.revealInstalledDirectory()
                 }
@@ -2184,14 +2191,26 @@ struct ContentView: View {
         chromeExtensionError = nil
     }
 
-    private func prepareChromeExtension() {
+    private func openChromeSetup() {
+        guard !openingChromeSetup else { return }
+        openingChromeSetup = true
+        ChromeExtensionInstaller.openChromeExtensionSettings { error in
+            openingChromeSetup = false
+            if let error {
+                chromeExtensionError = error
+            }
+        }
+    }
+
+    private func prepareChromeExtension(thenOpenChrome: Bool) {
         do {
             let directory = try ChromeExtensionInstaller.prepare()
             chromeExtensionDirectory = directory
             chromeExtensionReady = true
             chromeExtensionError = nil
-            AppLogger.log("Chrome extension prepared at \(directory.path)")
-            ChromeExtensionInstaller.openChromeExtensionSettings()
+            if thenOpenChrome {
+                openChromeSetup()
+            }
         } catch {
             chromeExtensionReady = false
             chromeExtensionError = error.localizedDescription

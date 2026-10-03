@@ -344,10 +344,12 @@ private struct AllTrafficNote: View {
 // MARK: - Lists
 
 /// The apps or websites that use the VPN: a switcher when the mode uses
-/// both, a field that searches the list (and adds a website), the list,
-/// and a footer with counts and actions on all of them.
+/// both, the browser extension's state above the websites, a field that
+/// searches the list (and adds a website), the list, and a footer with
+/// counts and actions on all of them.
 private struct RoutedList: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
     @State private var selection: Set<String> = []
     @State private var addError: String?
 
@@ -364,6 +366,9 @@ private struct RoutedList: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(maxWidth: .infinity)
+            }
+            if kind == .websites {
+                BrowserExtensionCard(monitor: extensionMonitor)
             }
             searchField
             if let candidate = addCandidate {

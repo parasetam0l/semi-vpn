@@ -172,3 +172,18 @@ final class ExtensionMonitor: ObservableObject {
         UserDefaults.standard.set(Array(notified), forKey: Self.notifiedKey)
     }
 }
+
+#if DEBUG
+extension ExtensionMonitor {
+    /// Sample state for UISnapshots, which never starts the monitor.
+    func showPreview(reports: [BrowserExtension.Report], expectedBuild: String?, isPrepared: Bool, now: Date = Date()) {
+        self.isPrepared = isPrepared
+        self.expectedBuild = expectedBuild
+        profiles = reports.map { report in
+            let isActive = now.timeIntervalSince(report.lastSeen) < Self.activeWindow
+            return Profile(report: report, label: report.browser,
+                           status: status(of: report, isActive: isActive), isActive: isActive)
+        }
+    }
+}
+#endif

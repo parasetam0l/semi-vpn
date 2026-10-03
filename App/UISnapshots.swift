@@ -32,6 +32,14 @@ enum UISnapshots {
             Screen(name: "window-connected-websites", width: 400, height: 760) {
                 window(AppModel(preview: sample(status: .connected, mode: .browserOnly)))
             },
+            Screen(name: "window-websites-extension-not-set-up", width: 400, height: 760) {
+                extensionState(.notSetUp)
+                return window(AppModel(preview: sample(status: .disconnected, mode: .selectedAppsAndBrowser)))
+            },
+            Screen(name: "window-websites-extension-update", width: 400, height: 760) {
+                extensionState(.updateNeeded)
+                return window(AppModel(preview: sample(status: .connected, mode: .selectedAppsAndBrowser)))
+            },
             Screen(name: "window-apps", width: 400, height: 760) {
                 window(AppModel(preview: sample(status: .disconnected, mode: .selectedAppsAndBrowser, list: .apps)))
             },
@@ -93,6 +101,28 @@ enum UISnapshots {
         }
     }
 
+    private enum ExtensionState {
+        case notSetUp, active, updateNeeded
+    }
+
+    /// The browser extension as the next screen shows it; active unless the
+    /// screen sets another state.
+    @MainActor
+    private static func extensionState(_ state: ExtensionState) {
+        let installed = "0.4.1 (8be21f0)"
+        let chrome = { (build: String) in
+            BrowserExtension.Report(instance: "sample-chrome", browser: "Google Chrome", build: build, lastSeen: Date())
+        }
+        switch state {
+        case .notSetUp:
+            ExtensionMonitor.shared.showPreview(reports: [], expectedBuild: installed, isPrepared: false)
+        case .active:
+            ExtensionMonitor.shared.showPreview(reports: [chrome(installed)], expectedBuild: installed, isPrepared: true)
+        case .updateNeeded:
+            ExtensionMonitor.shared.showPreview(reports: [chrome("0.4.0 (3ca243a)")], expectedBuild: installed, isPrepared: true)
+        }
+    }
+
     @MainActor
     private static func window(_ model: AppModel) -> AnyView {
         AnyView(MainWindowView().environmentObject(model))
@@ -146,6 +176,7 @@ enum UISnapshots {
         for screen in screens {
             for (suffix, appearance) in appearances {
                 let url = folder.appendingPathComponent("\(screen.name)-\(suffix).png")
+                extensionState(.active)
                 save(screen.view(), width: screen.width, height: screen.height, appearance: appearance, to: url)
             }
         }

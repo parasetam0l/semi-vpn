@@ -16,7 +16,7 @@ struct BrowserExtensionPanel: View {
                 Text("Browser extension")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                statusPill
+                ExtensionStatusPill(monitor: monitor)
             }
 
             ForEach(monitor.profilesNeedingUpdate) { profile in
@@ -33,7 +33,9 @@ struct BrowserExtensionPanel: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(monitor.profiles) { profile in
-                        profileRow(profile)
+                        ExtensionProfileRow(monitor: monitor, profile: profile) {
+                            monitor.forget(profile)
+                        }
                         if profile.id != monitor.profiles.last?.id {
                             Rectangle().fill(SemiTheme.line).frame(height: 1)
                         }
@@ -91,80 +93,6 @@ struct BrowserExtensionPanel: View {
 
     // MARK: - Pieces
 
-    private var statusPill: some View {
-        let (text, color): (String, Color) = {
-            if !monitor.profilesNeedingUpdate.isEmpty { return ("Update needed", SemiTheme.amber) }
-            if monitor.profiles.contains(where: \.isActive) { return ("Active", SemiTheme.green) }
-            if !monitor.profiles.isEmpty { return ("Browser closed", SemiTheme.textMuted) }
-            return (monitor.isPrepared ? "Not detected" : "Not set up", SemiTheme.textMuted)
-        }()
-        return HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(color)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(color.opacity(0.12)))
-    }
-
-    private func profileRow(_ profile: ExtensionMonitor.Profile) -> some View {
-        HStack(spacing: 10) {
-            browserIcon(profile.browser)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(profile.label)
-                    .font(.system(size: 12, weight: .medium))
-                Text(detail(for: profile))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(profile.status == .updateNeeded ? SemiTheme.amber : SemiTheme.textMuted)
-            }
-            Spacer()
-            if !profile.isActive {
-                Button {
-                    monitor.forget(profile)
-                } label: {
-                    Image(systemName: "xmark.circle")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(SemiTheme.textMuted)
-                .help("Forget this profile, e.g. after removing the extension from it")
-            }
-            Image(systemName: icon(for: profile))
-                .foregroundStyle(color(for: profile))
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    private func detail(for profile: ExtensionMonitor.Profile) -> String {
-        let seen = profile.isActive ? "active now" : "last active " + Self.relative(profile.report.lastSeen)
-        let expected = monitor.expectedBuild
-        let new = expected.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? "the new version"
-        switch profile.status {
-        case .upToDate:
-            return "Up to date · \(profile.version) · \(seen)"
-        case .updateNeeded:
-            return "Runs \(profile.shownBuild(comparedTo: expected)) · reload it to use \(new)"
-        case .outdatedIdle:
-            return "Ran \(profile.shownBuild(comparedTo: expected)) · reload it to update when the browser runs · \(seen)"
-        }
-    }
-
-    private func icon(for profile: ExtensionMonitor.Profile) -> String {
-        switch profile.status {
-        case .upToDate: return profile.isActive ? "checkmark.circle.fill" : "moon.zzz"
-        case .updateNeeded: return "exclamationmark.triangle.fill"
-        case .outdatedIdle: return "clock.arrow.circlepath"
-        }
-    }
-
-    private func color(for profile: ExtensionMonitor.Profile) -> Color {
-        switch profile.status {
-        case .upToDate: return profile.isActive ? SemiTheme.green : SemiTheme.textMuted
-        case .updateNeeded: return SemiTheme.amber
-        case .outdatedIdle: return SemiTheme.textMuted
-        }
-    }
-
     private func updateBanner(for profile: ExtensionMonitor.Profile) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Update the extension in \(profile.label)", systemImage: "exclamationmark.triangle.fill")
@@ -216,6 +144,165 @@ struct BrowserExtensionPanel: View {
         formatter.unitsStyle = .full
         formatter.locale = Locale(identifier: "en_US")   // the app's UI is English
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+/// The extension's state in one word: active, update needed, not set up…
+struct ExtensionStatusPill: View {
+    @ObservedObject var monitor: ExtensionMonitor
+
+    var body: some View {
+        let (text, color): (String, Color) = {
+            if !monitor.profilesNeedingUpdate.isEmpty { return ("Update needed", SemiTheme.amber) }
+            if monitor.profiles.contains(where: \.isActive) { return ("Active", SemiTheme.green) }
+            if !monitor.profiles.isEmpty { return ("Browser closed", SemiTheme.textMuted) }
+            return (monitor.isPrepared ? "Not detected" : "Not set up", SemiTheme.textMuted)
+        }()
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(color)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(color.opacity(0.12)))
+        .fixedSize()
+    }
+}
+
+/// A browser profile that runs the extension: its version and when it last
+/// checked in.
+struct ExtensionProfileRow: View {
+    @ObservedObject var monitor: ExtensionMonitor
+    let profile: ExtensionMonitor.Profile
+    /// Offered on profiles that aren't active; nil: not offered.
+    var onForget: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            browserIcon(profile.browser)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.label)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(profile.status == .updateNeeded ? SemiTheme.amber : SemiTheme.textMuted)
+            }
+            Spacer()
+            if !profile.isActive, let onForget {
+                Button(action: onForget) {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(SemiTheme.textMuted)
+                .help("Forget this profile, e.g. after removing the extension from it")
+            }
+            Image(systemName: icon)
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var detail: String {
+        let seen = profile.isActive ? "active now" : "last active " + BrowserExtensionPanel.relative(profile.report.lastSeen)
+        let expected = monitor.expectedBuild
+        let new = expected.map { BrowserExtension.display($0, comparedTo: profile.report.build) } ?? "the new version"
+        switch profile.status {
+        case .upToDate:
+            return "Up to date · \(profile.version) · \(seen)"
+        case .updateNeeded:
+            return "Runs \(profile.shownBuild(comparedTo: expected)) · reload it to use \(new)"
+        case .outdatedIdle:
+            return "Ran \(profile.shownBuild(comparedTo: expected)) · reload it to update when the browser runs · \(seen)"
+        }
+    }
+
+    private var icon: String {
+        switch profile.status {
+        case .upToDate: return profile.isActive ? "checkmark.circle.fill" : "moon.zzz"
+        case .updateNeeded: return "exclamationmark.triangle.fill"
+        case .outdatedIdle: return "clock.arrow.circlepath"
+        }
+    }
+
+    private var color: Color {
+        switch profile.status {
+        case .upToDate: return profile.isActive ? SemiTheme.green : SemiTheme.textMuted
+        case .updateNeeded: return SemiTheme.amber
+        case .outdatedIdle: return SemiTheme.textMuted
+        }
+    }
+}
+
+/// The extension's state above the window's website list, which only
+/// Chromium browsers with the extension send through SemiVPN; the gear
+/// opens the Browser tab of Settings.
+struct BrowserExtensionCard: View {
+    @ObservedObject var monitor: ExtensionMonitor
+    /// More profiles are summed up in one line.
+    private static let shownProfiles = 2
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "puzzlepiece.extension")
+                    .foregroundStyle(.secondary)
+                Text("Browser extension")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                ExtensionStatusPill(monitor: monitor)
+                Button(action: openSettings) {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Browser extension settings")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            if monitor.profiles.isEmpty {
+                divider
+                HStack(spacing: 10) {
+                    Text(monitor.isPrepared
+                         ? "Not detected in a browser yet. Finish the setup, or open the browser if it is closed."
+                         : "Set it up to send these websites through SemiVPN in Chrome, Edge, Brave and other Chromium browsers.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button(monitor.isPrepared ? "Finish Setup…" : "Set Up…", action: openSettings)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            } else {
+                ForEach(monitor.profiles.prefix(Self.shownProfiles)) { profile in
+                    divider
+                    ExtensionProfileRow(monitor: monitor, profile: profile)
+                }
+                if monitor.profiles.count > Self.shownProfiles {
+                    divider
+                    Button(action: openSettings) {
+                        Text("\(monitor.profiles.count - Self.shownProfiles) more in Settings")
+                            .font(.system(size: 11))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.borderless)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(SemiTheme.panel))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+    }
+
+    private var divider: some View {
+        Rectangle().fill(SemiTheme.line).frame(height: 0.5).padding(.leading, 12)
+    }
+
+    private func openSettings() {
+        SettingsWindowController.shared.show(.browser)
     }
 }
 

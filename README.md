@@ -302,6 +302,7 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 │   ├── proxy-tests.sh        # SemiProxy and its control API in isolation
 │   ├── extension-tests.mjs   # Extension update logic with a mocked chrome API
 │   ├── stamp-extension.sh    # Stamps the bundled extension's build fingerprint
+│   ├── notarize.sh           # Submits a build to Apple's notary service
 │   └── openssl-*.sh          # Locate, stage and bundle OpenSSL for Xcode
 ├── Shared/                   # Shared configurations and data models
 │   ├── SharedConfig.swift    # Routing modes, domain models, and IPC constants
@@ -346,6 +347,8 @@ SemiVPN has been validated byte-for-byte against:
 - **Development builds** (`build-dev.sh`, Apple Development signing) run on the Macs registered to the signing team and use the `packet-tunnel-provider` entitlement value.
 - **Developer ID (outside the App Store)**: available to individual and organization memberships. The Release configuration uses `packet-tunnel-provider-systemextension`, which Developer ID requires; sign the app and the extension with a Developer ID Application certificate and Developer ID provisioning profiles that include the Network Extensions and System Extension capabilities, then notarize.
 - **Mac App Store**: App Review Guideline 5.4 allows VPN apps only from developers **enrolled as an organization**.
+
+Releases are built, signed with Developer ID, notarized and published as a draft GitHub release by the manually started **Release** workflow; see [docs/RELEASING.md](docs/RELEASING.md) for the one-time certificate, profile and secret setup.
 
 All targets build with the Hardened Runtime, which notarization requires.
 

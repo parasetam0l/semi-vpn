@@ -4,23 +4,21 @@ import Security
 /// Hands the profile and its credentials from the app to the tunnel
 /// provider.
 ///
-/// Preferred path: a keychain item in an access group shared by the app and
-/// the extension (`keychain-access-groups`), so private keys and passwords
-/// never land in the Network Extension preferences, which are stored
-/// unencrypted on disk. When the shared group is unavailable (e.g. an
-/// unsigned development build), the values travel in the provider
-/// configuration as before.
+/// The provider is a system extension that runs as root, so it cannot read
+/// the user's keychain, and the Network Extension preferences are stored
+/// unencrypted on disk. The app therefore passes the profile and credentials
+/// in the options of every start it requests (in memory, over the system's
+/// IPC). The provider keeps them in a file in its own container, readable
+/// by root only, for the starts it gets without options: per-app on-demand
+/// and reconnects after sleep. Credentials the user did not ask to remember
+/// are not written there, and a rejected password is removed.
 public enum TunnelSecrets {
-    /// Provider-configuration keys.
+    /// Start-option keys.
+    public static let profileTextKey = "profileText"
     public static let usernameKey = "username"
     public static let passwordKey = "password"
     public static let keyPassphraseKey = "keyPassphrase"
-    /// Set when the profile and credentials are in the shared keychain.
-    public static let storedInKeychainKey = "secretsInKeychain"
-
-    static let service = "com.semivpn.tunnel"
-    static let account = "active-tunnel"
-    static let accessGroupSuffix = "com.semivpn.shared"
+    public static let rememberCredentialsKey = "rememberCredentials"
 
     public struct Credentials: Codable, Equatable {
         public var username: String?
@@ -38,96 +36,77 @@ public enum TunnelSecrets {
         }
     }
 
-    struct Payload: Codable {
-        var profileText: String
-        var credentials: Credentials
-    }
+    public struct Payload: Codable, Equatable {
+        public var profileText: String
+        public var credentials: Credentials
 
-    // MARK: - Provider side
-
-    public static func profileText(from configuration: [String: Any]) -> String? {
-        if configuration[storedInKeychainKey] as? Bool == true, let payload = loadShared() {
-            return payload.profileText
+        public init(profileText: String, credentials: Credentials) {
+            self.profileText = profileText
+            self.credentials = credentials
         }
-        return configuration[SharedConfig.profileKey] as? String
-    }
-
-    public static func credentials(from configuration: [String: Any]) -> Credentials {
-        if configuration[storedInKeychainKey] as? Bool == true, let payload = loadShared() {
-            return payload.credentials
-        }
-        return Credentials(
-            username: configuration[usernameKey] as? String,
-            password: configuration[passwordKey] as? String,
-            keyPassphrase: configuration[keyPassphraseKey] as? String
-        )
     }
 
     // MARK: - App side
 
-    /// Builds the secret part of a provider configuration: a keychain
-    /// marker when the shared item could be written, the values otherwise.
-    public static func providerConfigurationEntries(profileText: String, credentials: Credentials) -> [String: Any] {
-        if storeShared(Payload(profileText: profileText, credentials: credentials)) {
-            return [storedInKeychainKey: true]
-        }
-        var entries: [String: Any] = [SharedConfig.profileKey: profileText]
-        if let username = credentials.username { entries[usernameKey] = username }
-        if let password = credentials.password { entries[passwordKey] = password }
-        if let passphrase = credentials.keyPassphrase { entries[keyPassphraseKey] = passphrase }
-        return entries
-    }
-
-    /// Removes the password and key passphrase from the shared item (when
-    /// the user did not ask to remember them), keeping the profile.
-    public static func forgetSharedCredentials(keepUsername: Bool = true) {
-        guard var payload = loadShared() else { return }
-        payload.credentials = Credentials(username: keepUsername ? payload.credentials.username : nil)
-        _ = storeShared(payload)
-    }
-
-    /// True when the app and extension share a keychain access group.
-    public static var sharedKeychainAvailable: Bool { sharedAccessGroup != nil }
-
-    // MARK: - Keychain
-
-    /// The `…com.semivpn.shared` group from this process's
-    /// `keychain-access-groups` entitlement (it carries the team prefix).
-    static let sharedAccessGroup: String? = {
-        guard let task = SecTaskCreateFromSelf(kCFAllocatorDefault),
-              let value = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil),
-              let groups = value as? [String] else { return nil }
-        return groups.first { $0.hasSuffix(accessGroupSuffix) }
-    }()
-
-    private static func baseQuery(group: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: group,
-            kSecUseDataProtectionKeychain as String: true,
+    /// Options for NETunnelProviderSession.startTunnel(options:).
+    public static func startOptions(profileText: String, credentials: Credentials, remember: Bool) -> [String: NSObject] {
+        var options: [String: NSObject] = [
+            profileTextKey: profileText as NSString,
+            rememberCredentialsKey: NSNumber(value: remember),
         ]
+        if let username = credentials.username { options[usernameKey] = username as NSString }
+        if let password = credentials.password { options[passwordKey] = password as NSString }
+        if let passphrase = credentials.keyPassphrase { options[keyPassphraseKey] = passphrase as NSString }
+        return options
     }
 
-    static func storeShared(_ payload: Payload) -> Bool {
-        guard let group = sharedAccessGroup, let data = try? JSONEncoder().encode(payload) else { return false }
-        var query = baseQuery(group: group)
-        SecItemDelete(query as CFDictionary)
-        query[kSecValueData as String] = data
-        // The provider can be started at boot (on-demand) before a login.
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+    // MARK: - Provider side
+
+    /// The secrets for a start: from its options (a start the app requested),
+    /// which are also stored for later starts, else the stored ones.
+    public static func payload(forStartOptions options: [String: NSObject]?) -> Payload? {
+        if let options, let profileText = options[profileTextKey] as? String {
+            let credentials = Credentials(
+                username: options[usernameKey] as? String,
+                password: options[passwordKey] as? String,
+                keyPassphrase: options[keyPassphraseKey] as? String
+            )
+            let remember = (options[rememberCredentialsKey] as? NSNumber)?.boolValue ?? true
+            store(Payload(
+                profileText: profileText,
+                credentials: remember ? credentials : Credentials(username: credentials.username)
+            ))
+            return Payload(profileText: profileText, credentials: credentials)
+        }
+        return storedPayload()
     }
 
-    static func loadShared() -> Payload? {
-        guard let group = sharedAccessGroup else { return nil }
-        var query = baseQuery(group: group)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
+    /// Removes the stored password and key passphrase (e.g. after the server
+    /// rejected the password), keeping the profile and username.
+    public static func forgetStoredCredentials() {
+        guard var payload = storedPayload() else { return }
+        payload.credentials = Credentials(username: payload.credentials.username)
+        store(payload)
+    }
+
+    static var storeURL: URL? {
+        SharedConfig.containerURL?.appendingPathComponent("tunnel-secrets.json")
+    }
+
+    static func store(_ payload: Payload) {
+        guard let url = storeURL, let data = try? JSONEncoder().encode(payload) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Owner-only before the secrets go in; a non-atomic write keeps the
+        // permissions (an atomic one would create a new file first).
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try? data.write(to: url)
+    }
+
+    static func storedPayload() -> Payload? {
+        guard let url = storeURL, let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(Payload.self, from: data)
     }
 }

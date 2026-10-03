@@ -309,14 +309,9 @@ final class VPNManager: ObservableObject {
             SharedConfig.routingModeKey: selection.routingMode.rawValue,
             SharedConfig.nativePerAppKey: wantsPerApp,
         ]
-        // The profile (private key) and credentials go to the shared
-        // keychain when available; only then are they kept out of the
-        // Network Extension preferences.
-        let secrets = TunnelSecrets.providerConfigurationEntries(profileText: profileText, credentials: effective)
-        providerConfiguration.merge(secrets) { _, new in new }
-        if secrets[TunnelSecrets.storedInKeychainKey] == nil {
-            AppLogger.log("start: shared keychain unavailable; secrets are stored in the VPN configuration")
-        }
+        // The profile (private key) and credentials travel with the start
+        // request instead (see TunnelSecrets): the VPN preferences are stored
+        // unencrypted on disk.
         tunnelProtocol.providerConfiguration = providerConfiguration
         tunnelManager.protocolConfiguration = tunnelProtocol
         if wantsPerApp {
@@ -370,16 +365,27 @@ final class VPNManager: ObservableObject {
         // invalid, especially after changing routing kind.
         try await Task.sleep(nanoseconds: 2_000_000_000)
 
+        let options = TunnelSecrets.startOptions(
+            profileText: profileText, credentials: effective, remember: keepCredentialsAfterStop
+        )
         do {
-            try tunnelManager.connection.startVPNTunnel()
+            try Self.startTunnel(tunnelManager, options: options)
             AppLogger.log("start: packet tunnel started")
         } catch {
             AppLogger.log("start: tunnel start error: \(error) — retrying after propagation")
             try? await tunnelManager.loadFromPreferences()
             try await Task.sleep(nanoseconds: 2_000_000_000)
-            try tunnelManager.connection.startVPNTunnel()
+            try Self.startTunnel(tunnelManager, options: options)
             AppLogger.log("start: packet tunnel started after retry")
         }
+    }
+
+    private static func startTunnel(_ manager: NETunnelProviderManager, options: [String: NSObject]) throws {
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            try manager.connection.startVPNTunnel()
+            return
+        }
+        try session.startTunnel(options: options)
     }
 
     func stop() {
@@ -422,9 +428,6 @@ final class VPNManager: ObservableObject {
                 }
             }
 
-            if !self.keepCredentialsAfterStop {
-                TunnelSecrets.forgetSharedCredentials()
-            }
             if self.tunnelManager === manager {
                 self.tunnelManager = nil
                 self.status = .disconnected
@@ -501,7 +504,6 @@ final class VPNManager: ObservableObject {
             DispatchQueue.main.async {
                 if message.hasPrefix("Authentication failed"), let profileName {
                     CredentialStore.forgetPassword(profile: profileName)
-                    TunnelSecrets.forgetSharedCredentials()
                 }
                 self?.lastError = message
             }

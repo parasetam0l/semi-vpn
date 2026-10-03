@@ -2,6 +2,7 @@ import Foundation
 import Network
 import NetworkExtension
 import OpenVPNCore
+import os
 
 /// The packet tunnel extension: owns the utun interface and runs the
 /// from-scratch OpenVPN client.
@@ -14,6 +15,11 @@ import OpenVPNCore
 ///   redirects the gateway (or pushes no routes) gets the default route;
 ///   a split-tunnel server only gets its pushed routes. `net_gateway`
 ///   routes are excluded in both cases.
+///
+/// It runs as a system extension, as root: the profile and credentials come
+/// with the start options (see TunnelSecrets), and the log also goes to the
+/// unified log (`log stream --predicate 'subsystem == "com.semivpn.tunnel"'`)
+/// because its file is in root's container.
 ///
 /// Threading: provider state is confined to `queue`. NetworkExtension
 /// callbacks, OpenVPN delegate callbacks and packet-flow completions all
@@ -44,6 +50,7 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
     private var inboundFlushScheduled = false
 
     static let maxLogSize: UInt64 = 2 * 1024 * 1024
+    private static let logger = Logger(subsystem: "com.semivpn.tunnel", category: "provider")
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         setupLogging()
@@ -51,11 +58,14 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
         queue.async { [self] in
             startCompletionHandler = completionHandler
 
-            let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
-            guard let profileText = TunnelSecrets.profileText(from: providerConfiguration), !profileText.isEmpty else {
-                finishStart(with: tunnelError("No profile provided", code: 1))
+            // Options come with a start the app requested; on-demand starts
+            // have none and use the secrets stored at the last one.
+            log(options?[TunnelSecrets.profileTextKey] != nil ? "start requested by the app" : "start without options (on demand)")
+            guard let secrets = TunnelSecrets.payload(forStartOptions: options), !secrets.profileText.isEmpty else {
+                finishStart(with: tunnelError("No profile provided. Connect once from the SemiVPN app.", code: 1))
                 return
             }
+            let profileText = secrets.profileText
 
             var profile: OVPNProfile
             do {
@@ -64,7 +74,7 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
                 finishStart(with: tunnelError("Invalid profile: \(error)", code: 2))
                 return
             }
-            let credentials = TunnelSecrets.credentials(from: providerConfiguration)
+            let credentials = secrets.credentials
             if let username = credentials.username, !username.isEmpty {
                 profile.authUserPass = OVPNProfile.AuthUserPass(username: username, password: credentials.password ?? "")
             }
@@ -384,6 +394,10 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
                 reasserting = true
             case .failed(let reason):
                 tunnelSettingsGeneration &+= 1
+                if reason.hasPrefix("Authentication failed") {
+                    // Do not retry a rejected password on the next on-demand start.
+                    TunnelSecrets.forgetStoredCredentials()
+                }
                 let error = tunnelError(reason, code: 4)
                 reasserting = false
                 if startCompletionHandler != nil {
@@ -596,6 +610,7 @@ class TunnelProvider: NEPacketTunnelProvider, OpenVPNConnection.Delegate {
     }
 
     private func log(_ message: String) {
+        Self.logger.log("\(message, privacy: .public)")
         let line = "[\(Date().timeIntervalSince1970)] \(message)\n"
         logQueue.async { [weak self] in
             guard let logFile = self?.logFile else { return }

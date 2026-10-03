@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SemiVPN Domain Routing",
-  "version": "0.3.0",
-  "description": "Send selected Chrome domains through SemiVPN while keeping everything else direct.",
+  "version": "0.4.0",
+  "description": "Send selected domains through SemiVPN while keeping everything else direct.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArNxwqX5Yfu0iIWGIx+JRs8HmVU7FSEfXDMN8zDxz+6m/6Pu7+rQ8TGvY4rzBHc9cReUshcRxWeRtgQC3vhvTPfINKJruMUMXCyQfc2qQpwoe8DOmJcS9JQT/2G4AIaaXv1F8477wzjZcpeoMFheL1HHkYIgYV2nBeJubR9EDxrwYSptMFPlgG+wX0v53ypGB316CDKHzK/qp7X/QkZNDIwTALHBS9ehzzkXj1/rtpr7/+7CY+qSpNDrCxaWLGaabwf7Tyov4quwYWlUybi5KRcr6p1kd4fpojnledo2NvOu8lYyhjaP2A+SiSSqdOnOLUiqMlnAgySOrrxDhsMaZBwIDAQAB",
   "permissions": [
     "proxy",

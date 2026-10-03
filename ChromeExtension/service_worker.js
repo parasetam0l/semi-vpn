@@ -5,6 +5,12 @@ const API_ENDPOINTS = [
 const PROXY_HOST = "127.0.0.1";
 const PROXY_PORT = 49280;
 const CACHE_KEY = "semiVPNDomainConfiguration";
+const INSTANCE_KEY = "semiVPNInstance";
+const UPDATE_KEY = "semiVPNExtensionUpdate";
+const MANIFEST = chrome.runtime.getManifest();
+// The build this browser runs: the version_name the SemiVPN app build stamps
+// from the extension's files ("0.4.0 (1a2b3c4)"), else the version.
+const RUNNING_BUILD = MANIFEST.version_name || MANIFEST.version;
 let syncChain = Promise.resolve();
 
 function getStoredConfiguration() {
@@ -150,17 +156,80 @@ async function apiFetch(path) {
   throw lastError || new Error("SemiVPN API unreachable");
 }
 
+// The browser's brand ("Google Chrome", "Microsoft Edge", "Brave", ...),
+// skipping Chromium and the randomized "Not A Brand" entries.
+function browserName() {
+  const brands = (navigator.userAgentData && navigator.userAgentData.brands) || [];
+  const named = brands.map((entry) => entry.brand).filter((name) => !/not.?a.?brand|^chromium$/i.test(name));
+  return named[0] || "Chromium";
+}
+
+// A random ID per browser profile, so the app can list each one.
+async function instanceID() {
+  const stored = (await chrome.storage.local.get(INSTANCE_KEY))[INSTANCE_KEY];
+  if (stored) return stored;
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ [INSTANCE_KEY]: id });
+  return id;
+}
+
+// Tells the app which build this profile runs, with every status request.
+async function reportQuery() {
+  const fields = { instance: await instanceID(), browser: browserName(), build: RUNNING_BUILD };
+  return Object.entries(fields).map(([key, value]) => key + "=" + encodeURIComponent(value)).join("&");
+}
+
 async function fetchConfiguration() {
   const [status, domainConfiguration] = await Promise.all([
-    apiFetch("/status"),
+    apiFetch("/status?" + await reportQuery()),
     apiFetch("/domains")
   ]);
   return normalizeDomainConfiguration({ ...status, ...domainConfiguration });
 }
 
+// The SemiVPN app copies each new extension build into the folder this
+// extension is loaded from (extensionBuild in its status), so a reload picks
+// it up. One reload per build: when it does not help, the browser loads the
+// extension from another folder, and the popup and badge ask the user to
+// update it by hand instead.
+async function checkForNewBuild(configuration) {
+  const target = configuration.extensionBuild;
+  const stored = (await chrome.storage.local.get(UPDATE_KEY))[UPDATE_KEY] || null;
+  if (!target || target === RUNNING_BUILD) {
+    if (stored) {
+      await chrome.storage.local.remove(UPDATE_KEY);
+      updateAllActiveTabBadges().catch(() => {});
+    }
+    return;
+  }
+  if (!stored || stored.target !== target) {
+    await chrome.storage.local.set({
+      [UPDATE_KEY]: { target, from: RUNNING_BUILD, reloadedAt: Date.now(), manual: false }
+    });
+    chrome.runtime.reload();
+    return;
+  }
+  if (!stored.manual) {
+    await chrome.storage.local.set({ [UPDATE_KEY]: { ...stored, manual: true } });
+    updateAllActiveTabBadges().catch(() => {});
+  }
+}
+
+async function manualUpdateNeeded() {
+  try {
+    const stored = (await chrome.storage.local.get(UPDATE_KEY))[UPDATE_KEY];
+    return stored?.manual === true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 async function syncFromAppNow() {
   try {
-    return await applyConfiguration(await fetchConfiguration());
+    const configuration = await fetchConfiguration();
+    const applied = await applyConfiguration(configuration);
+    await checkForNewBuild(configuration).catch(() => {});
+    return applied;
   } catch (error) {
     // Keep the last known PAC rather than switching to a direct proxy on an
     // API hiccup. A stale list can fail closed at the local proxy; a DIRECT
@@ -308,6 +377,22 @@ function matchingDomain(hostname, domains = [], subdomainDomains = domains) {
   }) || null;
 }
 
+// Tabs without a routing badge show "UPD" while the extension needs a manual
+// update; a listed site's routing state matters more.
+async function setIdleBadge(tabId, title) {
+  if (await manualUpdateNeeded()) {
+    await chrome.action.setBadgeText({ text: "UPD", tabId });
+    await chrome.action.setBadgeBackgroundColor({ color: "#f59e0b", tabId });
+    if (chrome.action.setBadgeTextColor) {
+      await chrome.action.setBadgeTextColor({ color: "#ffffff", tabId });
+    }
+    await chrome.action.setTitle({ title: "SemiVPN: extension update needed — open this popup", tabId });
+    return;
+  }
+  await chrome.action.setBadgeText({ text: "", tabId });
+  if (title) await chrome.action.setTitle({ title, tabId });
+}
+
 async function updateBadgeForTab(tabId, url) {
   if (!tabId || tabId < 0) return;
 
@@ -318,8 +403,7 @@ async function updateBadgeForTab(tabId, url) {
     }
 
     if (!url || !isHttpOrHttps(url)) {
-      await chrome.action.setBadgeText({ text: "", tabId });
-      await chrome.action.setTitle({ title: "SemiVPN Domain Routing", tabId });
+      await setIdleBadge(tabId, "SemiVPN Domain Routing");
       return;
     }
 
@@ -327,7 +411,7 @@ async function updateBadgeForTab(tabId, url) {
     try {
       hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
     } catch (_e) {
-      await chrome.action.setBadgeText({ text: "", tabId });
+      await setIdleBadge(tabId, null);
       return;
     }
 
@@ -338,8 +422,7 @@ async function updateBadgeForTab(tabId, url) {
     const matchedDomain = matchingDomain(hostname, domains, subdomainDomains);
     if (!matchedDomain) {
       // Direct site: clean toolbar icon with no badge
-      await chrome.action.setBadgeText({ text: "", tabId });
-      await chrome.action.setTitle({ title: `SemiVPN: Direct (${hostname})`, tabId });
+      await setIdleBadge(tabId, `SemiVPN: Direct (${hostname})`);
       return;
     }
 

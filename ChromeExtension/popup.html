@@ -12,6 +12,20 @@
     <span id="connection" class="status">VPN: Checking…</span>
   </header>
   <main>
+    <section id="update-notice" class="update-notice" hidden role="status" aria-labelledby="update-title">
+      <span class="update-icon" aria-hidden="true">↻</span>
+      <div class="update-body">
+        <strong id="update-title">Extension update available</strong>
+        <small id="update-detail"></small>
+        <small id="update-folder-hint" hidden>Reloading did not update it, so this browser loads the extension from another folder. On the Extensions page, remove “SemiVPN Domain Routing” and load this folder instead:</small>
+        <code id="update-folder-path" hidden></code>
+        <div class="update-actions">
+          <button id="update-reload" type="button">Reload now</button>
+          <button id="update-open-extensions" class="secondary" type="button">Extensions page</button>
+          <button id="update-copy-folder" class="secondary" type="button" hidden>Copy path</button>
+        </div>
+      </div>
+    </section>
     <section id="browser-mode-warning" class="browser-mode-warning" hidden role="alert" aria-label="Browser routing unavailable">
       <span class="warning-icon" aria-hidden="true">!</span>
       <div>
@@ -98,7 +112,7 @@
   </div>
   <footer>
     <button id="sync" class="secondary">Refresh status</button>
-    <span class="ext-version">v0.2.0</span>
+    <span id="ext-version" class="ext-version"></span>
   </footer>
   <script src="popup.js"></script>
 </body>

@@ -1996,7 +1996,7 @@ struct ContentView: View {
         .frame(width: 420)
         .onAppear {
             refreshStatuses()
-            launchAtLogin = (NSApp.delegate as? AppDelegate)?.launchAtLoginEnabled ?? false
+            launchAtLogin = AppDelegate.shared?.launchAtLoginEnabled ?? false
             launchAtLoginError = nil
         }
     }
@@ -2017,12 +2017,12 @@ struct ContentView: View {
     }
 
     private var launchAtLoginStatusDescription: String {
-        (NSApp.delegate as? AppDelegate)?.launchAtLoginStatusDescription
+        AppDelegate.shared?.launchAtLoginStatusDescription
             ?? "Login item status is unavailable."
     }
 
     private func updateLaunchAtLogin(_ enabled: Bool) {
-        guard let appDelegate = NSApp.delegate as? AppDelegate else {
+        guard let appDelegate = AppDelegate.shared else {
             launchAtLoginError = "Login item status is unavailable."
             return
         }

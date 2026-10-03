@@ -60,6 +60,15 @@ struct SemiVPNApp: App {
 /// Application lifecycle: menu-bar status item, close-to-tray behavior and
 /// single-window management.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
+    /// The app's delegate. SwiftUI's delegate adaptor installs its own object
+    /// as NSApp.delegate, so `NSApp.delegate as? AppDelegate` is always nil.
+    private(set) static weak var shared: AppDelegate?
+
+    override init() {
+        super.init()
+        AppDelegate.shared = self
+    }
+
     private static let launchAtLoginPreferenceKey = "launchAtLoginEnabled"
 
     private var statusItem: NSStatusItem?

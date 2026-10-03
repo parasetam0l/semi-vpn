@@ -65,7 +65,7 @@ struct IPAddressView: View {
 
     private var footer: String {
         guard let checkedAt else { return "From icanhazip.com" }
-        return "Checked " + BrowserExtensionPanel.relative(checkedAt)
+        return "Checked at " + checkedAt.formatted(date: .omitted, time: .shortened)
     }
 
     private func section(icon: String, tint: some ShapeStyle, title: String,

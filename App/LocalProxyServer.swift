@@ -30,11 +30,25 @@ final class LocalProxyServer {
     private var domainCache: (modified: Date?, value: SharedConfig.DomainConfiguration)?
     private var runtimeCache: (modified: Date?, value: SharedConfig.RuntimeState)?
 
+    /// Whether macOS routes this process through the VPN, and when that was
+    /// last seen (see SharedConfig.ProxyHealth). Confined to `queue`.
+    private var coverage: (tunneled: Bool, checkedAt: Date)?
+    private var coverageWaiters: [(Bool?) -> Void] = []
+    private var lastForwarding: Bool?
+    private static let coverageLifetime: TimeInterval = 30
+
     func start() {
         queue.async { [weak self] in
             guard let self else { return }
             self.startPathMonitor()
             self.startListeners()
+            self.vpnStateMayHaveChanged()
+        }
+        // The app posts this when the VPN or the domain list changes.
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.semivpn.app.domainConfigurationDidChange"), object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.queue.async { self?.vpnStateMayHaveChanged() }
         }
     }
 
@@ -299,6 +313,114 @@ final class LocalProxyServer {
         }
     }
 
+    // MARK: - VPN coverage
+    //
+    // macOS routes SemiProxy through the VPN only while the per-app rule
+    // matches its executable. nesessionmanager caches which executables a
+    // rule matches until it restarts, so after an update that changes
+    // SemiProxy's executable the rule can stop matching, and listed sites
+    // would silently use the regular network. SemiProxy checks for that,
+    // reports it to the app and the extension, and in fail-closed mode
+    // refuses listed sites until it is repaired.
+
+    /// Whether a path leaves through a VPN tunnel interface; nil while it
+    /// has no interface.
+    private static func usesTunnel(_ path: NWPath?) -> Bool? {
+        guard let interface = path?.availableInterfaces.first else { return nil }
+        return interface.type == .other && ["utun", "ipsec", "ppp"].contains { interface.name.hasPrefix($0) }
+    }
+
+    private static func notRoutedMessage(host: String) -> String {
+        "SemiVPN: \(host) is only reachable through the VPN, but macOS is not routing SemiVPN's browser proxy "
+            + "through it right now. Open SemiVPN and choose Repair VPN Routing.\n"
+    }
+
+    /// Calls back with whether macOS routes SemiProxy through the VPN (nil
+    /// when that cannot be told), probing unless a recent answer is known.
+    private func checkCoverage(_ completion: @escaping (Bool?) -> Void) {
+        if let coverage, Date().timeIntervalSince(coverage.checkedAt) < Self.coverageLifetime {
+            completion(coverage.tunneled)
+            return
+        }
+        coverageWaiters.append(completion)
+        guard coverageWaiters.count == 1 else { return }
+        probeCoverage { [weak self] tunneled in
+            guard let self else { return }
+            if let tunneled { self.recordCoverage(tunneled) }
+            let waiters = self.coverageWaiters
+            self.coverageWaiters.removeAll()
+            waiters.forEach { $0(tunneled) }
+        }
+    }
+
+    /// Starts (and drops) a connection to a public address that the VPN
+    /// routes, to see which interface macOS gives this process. Unlike a
+    /// listed host, which the VPN may exclude, it tells whether SemiProxy is
+    /// covered by the VPN at all.
+    private func probeCoverage(_ completion: @escaping (Bool?) -> Void) {
+        let probe = NWConnection(host: "1.1.1.1", port: 443, using: .tcp)
+        var finished = false
+        let finish = { (tunneled: Bool?) in
+            guard !finished else { return }
+            finished = true
+            probe.stateUpdateHandler = nil
+            probe.cancel()
+            completion(tunneled)
+        }
+        probe.stateUpdateHandler = { state in
+            switch state {
+            case .preparing, .ready, .waiting:
+                if let tunneled = Self.usesTunnel(probe.currentPath) { finish(tunneled) }
+            case .failed, .cancelled:
+                finish(nil)
+            default:
+                break
+            }
+        }
+        probe.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 3) { finish(nil) }
+    }
+
+    private func recordCoverage(_ tunneled: Bool) {
+        let changed = coverage?.tunneled != tunneled
+        coverage = (tunneled, Date())
+        guard changed else { return }
+        AppLogger.log(tunneled
+            ? "local proxy: macOS routes SemiProxy through the VPN"
+            : "local proxy: macOS does not route SemiProxy through the VPN (stale per-app rule?)")
+        publishHealth(tunnelBypassed: !tunneled)
+    }
+
+    private func publishHealth(tunnelBypassed: Bool) {
+        SharedConfig.saveProxyHealth(SharedConfig.ProxyHealth(tunnelBypassed: tunnelBypassed))
+        DistributedNotificationCenter.default().postNotificationName(
+            SharedConfig.proxyHealthDidChangeNotification, object: nil, userInfo: nil, deliverImmediately: true
+        )
+    }
+
+    /// Checks coverage as soon as the VPN connects, so a broken rule shows
+    /// before the user browses and a repair is noticed at once; forgets it
+    /// when the VPN disconnects.
+    private func vpnStateMayHaveChanged() {
+        let forwarding = canForward()
+        guard forwarding != lastForwarding else { return }
+        lastForwarding = forwarding
+        coverage = nil
+        if forwarding {
+            // Give the tunnel's routes a moment to settle.
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.checkCoverage { _ in }
+            }
+        } else {
+            publishHealth(tunnelBypassed: false)
+        }
+    }
+
+    /// For the status API: the VPN is up but SemiProxy is outside it.
+    private var tunnelBypassed: Bool {
+        coverage?.tunneled == false && canForward()
+    }
+
     // MARK: - Proxy protocol
 
     private func handleProxyConnection(_ connection: NWConnection) {
@@ -352,6 +474,27 @@ final class LocalProxyServer {
             return
         }
 
+        if shouldTunnel, domainConfig.blockWhenDisconnected {
+            // Fail closed: make sure macOS routes SemiProxy through the VPN
+            // before contacting the host, whose address a direct connection
+            // attempt would already reveal on the regular network.
+            checkCoverage { [weak self] tunneled in
+                guard let self else { return }
+                if tunneled == false {
+                    AppLogger.log("local proxy: blocked \(target.host):\(target.port) (SemiProxy is not routed through the VPN)")
+                    self.sendProxyResponse(status: "503 Service Unavailable", body: Self.notRoutedMessage(host: target.host), on: client)
+                } else {
+                    self.openUpstream(request, target: target, client: client, shouldTunnel: true, failClosed: true)
+                }
+            }
+            return
+        }
+        openUpstream(request, target: target, client: client, shouldTunnel: shouldTunnel,
+                     failClosed: domainConfig.blockWhenDisconnected)
+    }
+
+    private func openUpstream(_ request: HTTPRequest, target: ProxyTarget, client: NWConnection,
+                              shouldTunnel: Bool, failClosed: Bool) {
         let upstreamParams = NWParameters.tcp
         upstreamParams.preferNoProxies = true
         if shouldTunnel {
@@ -407,39 +550,25 @@ final class LocalProxyServer {
                 upstream.stateUpdateHandler = nil
                 let iface = upstream.currentPath?.availableInterfaces.first?.name ?? "unknown"
                 AppLogger.log("local proxy: upstream \(target.host):\(target.port) ready on \(iface)")
-                if request.method == "CONNECT" {
-                    self.sendData(Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8), on: client) { error in
-                        if let error {
-                            AppLogger.log("local proxy: CONNECT response failed: \(error)")
-                            upstream.cancel()
-                            client.cancel()
-                            return
-                        }
-                        if !request.trailing.isEmpty {
-                            upstream.send(content: request.trailing, completion: .contentProcessed { sendError in
-                                if let sendError {
-                                    AppLogger.log("local proxy: CONNECT initial data failed: \(sendError)")
-                                    upstream.cancel()
-                                    client.cancel()
-                                    return
-                                }
-                                ProxyRelay(client: client, upstream: upstream, queue: self.queue).start()
-                            })
-                        } else {
-                            ProxyRelay(client: client, upstream: upstream, queue: self.queue).start()
-                        }
+                guard shouldTunnel, Self.usesTunnel(upstream.currentPath) == false else {
+                    if shouldTunnel { self.recordCoverage(true) }
+                    self.startRelay(request, target: target, client: client, upstream: upstream)
+                    return
+                }
+                // Outside the tunnel: either the VPN excludes this host (the
+                // VPN server itself, for one), or macOS does not route
+                // SemiProxy through the VPN at all.
+                self.checkCoverage { tunneled in
+                    if tunneled == false, failClosed {
+                        AppLogger.log("local proxy: blocked \(target.host):\(target.port) (SemiProxy is not routed through the VPN)")
+                        upstream.cancel()
+                        self.sendProxyResponse(status: "503 Service Unavailable", body: Self.notRoutedMessage(host: target.host), on: client)
+                        return
                     }
-                } else {
-                    let outbound = self.rewrittenHTTPRequest(request, target: target)
-                    upstream.send(content: outbound, completion: .contentProcessed { sendError in
-                        if let sendError {
-                            AppLogger.log("local proxy: HTTP request failed: \(sendError)")
-                            upstream.cancel()
-                            client.cancel()
-                            return
-                        }
-                        ProxyRelay(client: client, upstream: upstream, queue: self.queue).start()
-                    })
+                    AppLogger.log(tunneled == false
+                        ? "local proxy: \(target.host):\(target.port) leaves outside the VPN: SemiProxy is not routed through it"
+                        : "local proxy: \(target.host):\(target.port) is outside the VPN's routes; connecting directly")
+                    self.startRelay(request, target: target, client: client, upstream: upstream)
                 }
             case .waiting(let error):
                 AppLogger.log("local proxy: upstream \(target.host):\(target.port) waiting: \(error), path=\(String(describing: upstream.currentPath))")
@@ -468,6 +597,44 @@ final class LocalProxyServer {
             }
         }
         upstream.start(queue: queue)
+    }
+
+    /// Answers the browser and pipes the two connections together.
+    private func startRelay(_ request: HTTPRequest, target: ProxyTarget, client: NWConnection, upstream: NWConnection) {
+        if request.method == "CONNECT" {
+            self.sendData(Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8), on: client) { error in
+                if let error {
+                    AppLogger.log("local proxy: CONNECT response failed: \(error)")
+                    upstream.cancel()
+                    client.cancel()
+                    return
+                }
+                if !request.trailing.isEmpty {
+                    upstream.send(content: request.trailing, completion: .contentProcessed { sendError in
+                        if let sendError {
+                            AppLogger.log("local proxy: CONNECT initial data failed: \(sendError)")
+                            upstream.cancel()
+                            client.cancel()
+                            return
+                        }
+                        ProxyRelay(client: client, upstream: upstream, queue: self.queue).start()
+                    })
+                } else {
+                    ProxyRelay(client: client, upstream: upstream, queue: self.queue).start()
+                }
+            }
+        } else {
+            let outbound = self.rewrittenHTTPRequest(request, target: target)
+            upstream.send(content: outbound, completion: .contentProcessed { sendError in
+                if let sendError {
+                    AppLogger.log("local proxy: HTTP request failed: \(sendError)")
+                    upstream.cancel()
+                    client.cancel()
+                    return
+                }
+                ProxyRelay(client: client, upstream: upstream, queue: self.queue).start()
+            })
+        }
     }
 
     private func parseAuthority(_ value: String, defaultPort: UInt16) -> ProxyTarget? {
@@ -599,7 +766,8 @@ final class LocalProxyServer {
                 revision: domainConfiguration.revision,
                 updatedAt: domainConfiguration.updatedAt,
                 extensionBuild: BrowserExtension.build(ofExtensionAt: BrowserExtension.installedDirectoryURL),
-                extensionFolder: BrowserExtension.installedDirectoryURL.path
+                extensionFolder: BrowserExtension.installedDirectoryURL.path,
+                tunnelBypassed: tunnelBypassed
             )
             sendJSON(status, status: "200 OK", on: connection)
         case ("GET", "/v1/domains"):
@@ -773,6 +941,8 @@ final class LocalProxyServer {
         /// reload of the extension would run), and that folder.
         let extensionBuild: String?
         let extensionFolder: String
+        /// The VPN is connected but macOS routes SemiProxy outside it.
+        let tunnelBypassed: Bool
     }
 
     private struct HTTPRequest {

@@ -15,11 +15,15 @@ PROXY_PORT=59280
 CONTROL_PORT=59281
 UPSTREAM_PORT=58080
 PIDS=()
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister
 cleanup() {
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
     done
+    # Xcode registers built apps with LaunchServices; drop the scratch copies
+    # so they do not linger next to the installed SemiProxy.
+    find "$WORK" -name "*.app" -type d -exec "$LSREGISTER" -u {} \; 2>/dev/null
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -84,8 +88,17 @@ check "HTTP proxy connections are not reused across requests" closed "$reuse"
 
 write_config true false
 check "listed domain is blocked while disconnected (fail-closed)" 503 "$(via_proxy "http://127.0.0.1:$UPSTREAM_PORT/index.html")"
+
+# "Connected" without a real VPN: macOS routes this SemiProxy outside any
+# tunnel, exactly as when a stale per-app rule stops matching it.
+write_config false true
+check "listed domain still loads outside the VPN (fail-open)" 200 "$(via_proxy "http://127.0.0.1:$UPSTREAM_PORT/index.html")"
+check "status reports that the proxy is outside the VPN" True \
+    "$(curl -s "http://127.0.0.1:$CONTROL_PORT/v1/status" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tunnelBypassed"))')"
+check "the app is told the proxy is outside the VPN" True \
+    "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tunnelBypassed"])' "$WORK/config/proxy_health.json" 2>&1)"
 write_config true true
-check "listed domain is forwarded while connected" 200 "$(via_proxy "http://127.0.0.1:$UPSTREAM_PORT/index.html")"
+check "listed domain is blocked outside the VPN (fail-closed)" 503 "$(via_proxy "http://127.0.0.1:$UPSTREAM_PORT/index.html")"
 
 check "control API answers loopback callers" 200 "$(control "http://127.0.0.1:$CONTROL_PORT/v1/status")"
 check "control API rejects DNS-rebinding hosts" 421 "$(control -H "Host: evil.example:$CONTROL_PORT" "http://127.0.0.1:$CONTROL_PORT/v1/status")"

@@ -102,6 +102,44 @@ public enum SharedConfig {
         return state
     }
 
+    /// Whether macOS actually routes SemiProxy through the VPN, as SemiProxy
+    /// last observed it. A per-app VPN rule can stop matching SemiProxy
+    /// (nesessionmanager caches app identities until it restarts); listed
+    /// sites then leave through the regular network.
+    public struct ProxyHealth: Codable, Equatable {
+        public var tunnelBypassed: Bool
+        public var checkedAt: Date
+
+        public init(tunnelBypassed: Bool, checkedAt: Date = Date()) {
+            self.tunnelBypassed = tunnelBypassed
+            self.checkedAt = checkedAt
+        }
+    }
+
+    public static let proxyHealthFile = "proxy_health.json"
+    /// Posted (distributed) by SemiProxy when ProxyHealth changes.
+    public static let proxyHealthDidChangeNotification = Notification.Name("com.semivpn.app.proxyHealthDidChange")
+
+    public static var proxyHealthURL: URL? {
+        containerURL?.appendingPathComponent(proxyHealthFile)
+    }
+
+    public static func saveProxyHealth(_ health: ProxyHealth) {
+        ensureDirectories()
+        guard let url = proxyHealthURL else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(health) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    public static func loadProxyHealth() -> ProxyHealth? {
+        guard let url = proxyHealthURL, let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ProxyHealth.self, from: data)
+    }
+
     public static func ensureDirectories() {
         guard let profilesURL else { return }
         try? FileManager.default.createDirectory(at: profilesURL, withIntermediateDirectories: true)

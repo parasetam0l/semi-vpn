@@ -63,6 +63,10 @@ final class ExtensionMonitor: ObservableObject {
 
     /// Profiles report about once a minute.
     static let activeWindow: TimeInterval = 150
+    /// A profile that stopped reporting this long ago while the same browser
+    /// has an active one is not shown: removing and adding the extension
+    /// again gives it a new identity, and the old one would linger.
+    static let supersededAfter: TimeInterval = 300
 
     private var timer: Timer?
     private static let notifiedKey = "notifiedExtensionUpdates"
@@ -89,8 +93,13 @@ final class ExtensionMonitor: ObservableObject {
         let expected = ChromeExtensionInstaller.bundledBuild
         if expected != expectedBuild { expectedBuild = expected }
 
+        var reports = BrowserExtension.loadReports()
+        let activeBrowsers = Set(reports.filter { now.timeIntervalSince($0.lastSeen) < Self.activeWindow }.map(\.browser))
+        reports.removeAll {
+            activeBrowsers.contains($0.browser) && now.timeIntervalSince($0.lastSeen) > Self.supersededAfter
+        }
         // Number a browser's profiles in a stable order.
-        let reports = BrowserExtension.loadReports().sorted { $0.instance < $1.instance }
+        reports.sort { $0.instance < $1.instance }
         let profileCounts = Dictionary(grouping: reports, by: \.browser).mapValues(\.count)
         var numbers: [String: Int] = [:]
         var next: [Profile] = []
@@ -131,6 +140,13 @@ final class ExtensionMonitor: ObservableObject {
             body: (blocks ? "Listed sites are blocked: " : "Listed sites use your regular connection: ")
                 + "macOS stopped routing SemiVPN’s browser proxy through the VPN. Open SemiVPN and choose Repair VPN Routing."
         )
+    }
+
+    /// Removes a profile from the list (its extension was removed, or the
+    /// browser profile is gone).
+    func forget(_ profile: Profile) {
+        BrowserExtension.forget(instance: profile.id)
+        refresh()
     }
 
     private func status(of report: BrowserExtension.Report, isActive: Bool) -> Status {

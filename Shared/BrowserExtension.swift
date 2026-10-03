@@ -127,6 +127,11 @@ public enum BrowserExtension {
         return changed
     }
 
+    /// Drops a profile, e.g. one whose extension was removed.
+    public static func forget(instance: String) {
+        save(loadReports().filter { $0.instance != instance })
+    }
+
     private static func save(_ reports: [Report]) {
         guard let url = reportsURL else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

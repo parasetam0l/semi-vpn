@@ -120,6 +120,16 @@ struct BrowserExtensionPanel: View {
                     .foregroundStyle(profile.status == .updateNeeded ? SemiTheme.amber : SemiTheme.textMuted)
             }
             Spacer()
+            if !profile.isActive {
+                Button {
+                    monitor.forget(profile)
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(SemiTheme.textMuted)
+                .help("Forget this profile, e.g. after removing the extension from it")
+            }
             Image(systemName: icon(for: profile))
                 .foregroundStyle(color(for: profile))
         }

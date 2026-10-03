@@ -17,10 +17,19 @@ Developer ID). Team: `P7V7795SS9`.
 
 ### 1. Developer ID Application certificate
 
-1. Xcode → Settings → Accounts → select your Apple ID → your team →
-   **Manage Certificates…** → **+** → **Developer ID Application**.
-2. In the same list, Control-click the new certificate → **Export
-   Certificate…** → save it as `DeveloperID.p12` with a strong password.
+Create it on the website, not in Xcode: Xcode issues it from the previous
+Developer ID authority, which expires on 1 February 2027 and takes its
+certificates with it.
+
+1. Keychain Access → Certificate Assistant → **Request a Certificate From a
+   Certificate Authority…** → your Apple ID e-mail and name, **Saved to
+   disk**.
+2. [Certificates](https://developer.apple.com/account/resources/certificates/list)
+   → **+** → **Developer ID Application** → **G2 Sub-CA** → upload the
+   request, download the certificate and double-click it.
+3. Keychain Access → My Certificates → Control-click the new certificate
+   (it expires five years from now) → **Export** → save it as
+   `DeveloperID.p12` with a strong password.
 
 ### 2. App IDs
 
@@ -36,8 +45,10 @@ are on (Xcode turned them on for development builds already):
 ### 3. Developer ID provisioning profiles
 
 Profiles → **+** → Distribution → **Developer ID** → Continue, then select
-the App ID and the Developer ID certificate from step 1. The names must
-match `project.yml` exactly:
+the App ID and the Developer ID certificate from step 1 (if there are
+several, the one with the same expiry date). The profiles must contain the
+certificate in the `.p12`, and their names must match `project.yml`
+exactly:
 
 | App ID | Profile name |
 | --- | --- |

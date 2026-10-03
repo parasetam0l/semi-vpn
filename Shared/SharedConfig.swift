@@ -314,6 +314,63 @@ public enum SharedConfig {
         return try? JSONDecoder().decode(Selection.self, from: data)
     }
 
+    // MARK: - Applied routing
+
+    /// What the running tunnel was started with. The user can change the
+    /// selection while connected; macOS applies new app rules only when the
+    /// tunnel starts again, so until the reconnect the browser proxy keeps
+    /// following the running tunnel, and the app shows what is pending.
+    public struct AppliedRouting: Codable, Equatable {
+        public var profileName: String
+        public var routingMode: RoutingMode
+        /// The switched-on apps, sorted; empty when the mode uses no apps.
+        public var appIdentifiers: [String]
+
+        public init(profileName: String, routingMode: RoutingMode, appIdentifiers: [String]) {
+            self.profileName = profileName
+            self.routingMode = routingMode
+            self.appIdentifiers = routingMode.requiresSelectedApps ? Array(Set(appIdentifiers)).sorted() : []
+        }
+
+        public init(selection: Selection) {
+            self.init(profileName: selection.profileName, routingMode: selection.routingMode,
+                      appIdentifiers: selection.appIdentifiers)
+        }
+    }
+
+    public static let appliedRoutingFile = "applied_routing.json"
+
+    public static var appliedRoutingURL: URL? {
+        containerURL?.appendingPathComponent(appliedRoutingFile)
+    }
+
+    /// Records what the tunnel was started with, or nil when it stopped.
+    public static func saveAppliedRouting(_ routing: AppliedRouting?) {
+        ensureDirectories()
+        guard let url = appliedRoutingURL else { return }
+        guard let routing else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        if let data = try? JSONEncoder().encode(routing) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    public static func loadAppliedRouting() -> AppliedRouting? {
+        guard let url = appliedRoutingURL, let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(AppliedRouting.self, from: data)
+    }
+
+    /// The routing mode in effect: the running tunnel's while it runs,
+    /// otherwise the selected one (used at the next connect).
+    public static func effectiveRoutingMode(tunnelRunning: Bool) -> RoutingMode? {
+        if tunnelRunning, let applied = loadAppliedRouting() {
+            return applied.routingMode
+        }
+        return loadSelection()?.routingMode
+    }
+
     // MARK: - Domain routing
 
     public struct DomainConfiguration: Codable, Equatable {

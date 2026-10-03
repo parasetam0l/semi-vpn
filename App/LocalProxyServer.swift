@@ -752,17 +752,22 @@ final class LocalProxyServer {
                 )
             }
             let domainConfiguration = domainConfiguration()
-            let selection = SharedConfig.loadSelection()
+            // While the tunnel runs, the routing it was started with: a
+            // change saved meanwhile applies when the app reconnects.
+            let vpnStatus = currentVPNStatus()
+            let mode = SharedConfig.effectiveRoutingMode(
+                tunnelRunning: ["connected", "connecting", "reasserting"].contains(vpnStatus)
+            )
             let status = LocalAPIStatus(
                 proxyHost: "127.0.0.1",
                 proxyPort: SharedConfig.localProxyPort,
                 controlHost: "127.0.0.1",
                 controlPort: SharedConfig.localControlPort,
                 forwardingAllowed: canForward(),
-                vpnStatus: currentVPNStatus(),
-                routingMode: selection?.routingMode.rawValue ?? "not-configured",
-                fullTunnel: selection?.fullTunnel ?? false,
-                domainRouting: selection?.domainRouting ?? false,
+                vpnStatus: vpnStatus,
+                routingMode: mode?.rawValue ?? "not-configured",
+                fullTunnel: mode?.usesFullTunnel ?? false,
+                domainRouting: mode?.includesBrowser ?? false,
                 domains: domainConfiguration.domains,
                 activeDomains: domainConfiguration.activeDomains,
                 inactiveDomains: domainConfiguration.inactiveDomains,

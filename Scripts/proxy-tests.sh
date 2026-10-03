@@ -118,6 +118,19 @@ check "incomplete browser reports are ignored" 1 \
     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$WORK/config/extension_reports.json" 2>&1)"
 check "control API accepts the SemiVPN extension" 200 "$(control -H "Origin: chrome-extension://jaiknknmjmncnocbcbneepnefhokegma" "http://127.0.0.1:$CONTROL_PORT/v1/status")"
 
+# A route changed while connected reaches the browser only with the
+# reconnect: until then the status reports the running tunnel's route.
+echo '{"profileFileName":"a.ovpn","routingMode":"all-apps"}' > "$WORK/config/selection.json"
+echo '{"profileName":"a.ovpn","routingMode":"browser-only","appIdentifiers":[]}' > "$WORK/config/applied_routing.json"
+echo '{"vpnStatus":"connected","forwardingAllowed":true,"hasVPNIPv6":false}' > "$WORK/config/runtime_state.json"
+sleep 1.1
+check "while connected, status reports the running tunnel's route" "browser-only" \
+    "$(curl -s -H "Origin: $EXTENSION_ORIGIN" "http://127.0.0.1:$CONTROL_PORT/v1/status" | json_field routingMode)"
+echo '{"vpnStatus":"disconnected","forwardingAllowed":false,"hasVPNIPv6":false}' > "$WORK/config/runtime_state.json"
+sleep 1.1
+check "while disconnected, status reports the selected route" "all-apps" \
+    "$(curl -s -H "Origin: $EXTENSION_ORIGIN" "http://127.0.0.1:$CONTROL_PORT/v1/status" | json_field routingMode)"
+
 echo
 echo "$PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

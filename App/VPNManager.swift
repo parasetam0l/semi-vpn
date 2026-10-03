@@ -23,6 +23,14 @@ final class VPNManager: ObservableObject {
     /// Set when connecting needs credentials the app does not have; the UI
     /// prompts and calls `start(credentials:remember:)` again.
     @Published var credentialRequest: CredentialRequest?
+    /// What the running tunnel was started with; nil while it is down.
+    /// Changes to the selection made meanwhile apply at the next start.
+    @Published private(set) var appliedRouting: SharedConfig.AppliedRouting?
+    /// True while reconnect() stops and starts the tunnel.
+    @Published private(set) var isReconnecting = false
+    /// Credentials entered for this connection without saving them, so a
+    /// reconnect doesn't ask again. Cleared by Disconnect.
+    private var sessionCredentials: (credentials: TunnelSecrets.Credentials, remember: Bool)?
 
     /// What a profile needs before it can connect.
     struct CredentialRequest: Identifiable, Equatable {
@@ -144,6 +152,7 @@ final class VPNManager: ObservableObject {
     }
 
     init() {
+        appliedRouting = SharedConfig.loadAppliedRouting()
         ensureProxyHelperRunning()
         loadSelection()
         updateProxyAvailability()
@@ -154,10 +163,11 @@ final class VPNManager: ObservableObject {
 
     #if DEBUG
     /// For UI snapshots: starts nothing, reads nothing, stops nothing.
-    init(previewStatus: NEVPNStatus) {
+    init(previewStatus: NEVPNStatus, appliedRouting: SharedConfig.AppliedRouting? = nil) {
         isPreview = true
         status = previewStatus
         hasSavedConfiguration = true
+        self.appliedRouting = appliedRouting
     }
     #endif
 
@@ -264,6 +274,9 @@ final class VPNManager: ObservableObject {
         }
         if let credentials, remember {
             CredentialStore.save(credentials, profile: selection.profileName)
+        }
+        if let credentials {
+            sessionCredentials = (credentials, remember)
         }
         keepCredentialsAfterStop = credentials == nil || remember
 
@@ -395,6 +408,50 @@ final class VPNManager: ObservableObject {
             try Self.startTunnel(tunnelManager, options: options)
             AppLogger.log("start: packet tunnel started after retry")
         }
+        let applied = SharedConfig.AppliedRouting(selection: selection)
+        SharedConfig.saveAppliedRouting(applied)
+        await MainActor.run {
+            self.appliedRouting = applied
+            self.updateProxyAvailability()
+        }
+    }
+
+    /// Applies the current selection to a running tunnel: macOS uses new
+    /// app rules (and a new profile or route) only when the tunnel starts
+    /// again. Credentials entered for this connection are used again.
+    func reconnect() async throws {
+        AppLogger.log("reconnect requested")
+        await MainActor.run { self.isReconnecting = true }
+        do {
+            await stopTunnel()
+            try await start(credentials: sessionCredentials?.credentials,
+                            remember: sessionCredentials?.remember ?? false)
+            await MainActor.run { self.isReconnecting = false }
+        } catch {
+            await MainActor.run { self.isReconnecting = false }
+            throw error
+        }
+    }
+
+    /// Writes the current app rules into the running per-app configuration
+    /// when only the apps changed. Per Apple, a running tunnel keeps the
+    /// rules it started with until it restarts; saving them shows whether a
+    /// newer macOS applies them at once, and keeps the configuration in step
+    /// for on-demand starts.
+    func saveAppRulesToRunningConfiguration() async {
+        guard let manager = tunnelManager, manager.routingMethod == .sourceApplication,
+              let selection, let applied = appliedRouting,
+              applied.routingMode == selection.routingMode, applied.profileName == selection.profileName,
+              applied != SharedConfig.AppliedRouting(selection: selection) else { return }
+        do {
+            let rules = try makeAppRules(for: selection)
+            try await manager.loadFromPreferences()
+            manager.appRules = rules
+            try await manager.saveToPreferences()
+            AppLogger.log("running configuration: saved \(rules.count) app rules; tunnel status \(manager.connection.status.rawValue)")
+        } catch {
+            AppLogger.log("running configuration: saving app rules failed: \(error)")
+        }
     }
 
     private static func startTunnel(_ manager: NETunnelProviderManager, options: [String: NSObject]) throws {
@@ -407,55 +464,68 @@ final class VPNManager: ObservableObject {
 
     func stop() {
         AppLogger.log("disconnect requested")
+        sessionCredentials = nil
+        Task {
+            await stopTunnel()
+        }
+    }
+
+    /// Stops the tunnel and waits until it is down (Disconnect, reconnect).
+    private func stopTunnel() async {
         guard let manager = tunnelManager else { return }
         userRequestedStop = true
 
-        Task {
-            // An explicit Disconnect must win over per-app On Demand. If the
-            // saved source-app configuration stays enabled, the selected app
-            // can immediately start the tunnel again on its next request.
-            if manager.routingMethod == .sourceApplication {
-                manager.isOnDemandEnabled = false
-                do {
-                    try await manager.saveToPreferences()
-                    AppLogger.log("disconnect: per-app on-demand disabled")
-                } catch {
-                    AppLogger.log("disconnect: could not disable on-demand: \(error)")
-                }
-            }
-
-            manager.connection.stopVPNTunnel()
-            for _ in 0..<50 {
-                if manager.connection.status == .disconnected || manager.connection.status == .invalid {
-                    break
-                }
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-
-            if manager.routingMethod == .sourceApplication {
-                // Keep the configuration object so the user-consent prompt
-                // is not shown on every future Connect, but disable it while
-                // the user has intentionally disconnected.
-                manager.isEnabled = false
-                do {
-                    try await manager.saveToPreferences()
-                    AppLogger.log("disconnect: disabled per-app routing configuration")
-                } catch {
-                    AppLogger.log("disconnect: could not disable per-app configuration: \(error)")
-                }
-            }
-
-            if self.tunnelManager === manager {
-                self.tunnelManager = nil
-                self.status = .disconnected
-                self.updateProxyAvailability()
-                self.restartProxyHelper()
-                if let statusObserver {
-                    NotificationCenter.default.removeObserver(statusObserver)
-                    self.statusObserver = nil
-                }
+        // An explicit Disconnect must win over per-app On Demand. If the
+        // saved source-app configuration stays enabled, the selected app
+        // can immediately start the tunnel again on its next request.
+        if manager.routingMethod == .sourceApplication {
+            manager.isOnDemandEnabled = false
+            do {
+                try await manager.saveToPreferences()
+                AppLogger.log("disconnect: per-app on-demand disabled")
+            } catch {
+                AppLogger.log("disconnect: could not disable on-demand: \(error)")
             }
         }
+
+        manager.connection.stopVPNTunnel()
+        for _ in 0..<50 {
+            if manager.connection.status == .disconnected || manager.connection.status == .invalid {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        if manager.routingMethod == .sourceApplication {
+            // Keep the configuration object so the user-consent prompt
+            // is not shown on every future Connect, but disable it while
+            // the user has intentionally disconnected.
+            manager.isEnabled = false
+            do {
+                try await manager.saveToPreferences()
+                AppLogger.log("disconnect: disabled per-app routing configuration")
+            } catch {
+                AppLogger.log("disconnect: could not disable per-app configuration: \(error)")
+            }
+        }
+
+        if self.tunnelManager === manager {
+            self.tunnelManager = nil
+            self.status = .disconnected
+            self.clearAppliedRouting()
+            self.updateProxyAvailability()
+            self.restartProxyHelper()
+            if let statusObserver {
+                NotificationCenter.default.removeObserver(statusObserver)
+                self.statusObserver = nil
+            }
+        }
+    }
+
+    private func clearAppliedRouting() {
+        guard appliedRouting != nil else { return }
+        appliedRouting = nil
+        SharedConfig.saveAppliedRouting(nil)
     }
 
     /// Restore the manager that macOS may still be running after the app was
@@ -493,6 +563,9 @@ final class VPNManager: ObservableObject {
             let previousStatus = self.status
             let newStatus = manager.connection.status
             self.status = newStatus
+            if newStatus == .disconnected || newStatus == .invalid {
+                self.clearAppliedRouting()
+            }
             self.updateProxyAvailability()
             AppLogger.log("VPN status: \(newStatus.rawValue)")
 
@@ -507,6 +580,9 @@ final class VPNManager: ObservableObject {
             }
         }
         status = manager.connection.status
+        if status == .disconnected || status == .invalid {
+            clearAppliedRouting()
+        }
         updateProxyAvailability()
     }
 
@@ -594,9 +670,14 @@ final class VPNManager: ObservableObject {
         return rules
     }
 
+    private var tunnelRunning: Bool {
+        status == .connected || status == .connecting || status == .reasserting
+    }
+
     private var activeProfileHasIPv6: Bool {
-        guard let selection,
-              let profileText = SharedConfig.loadProfile(name: selection.profileName),
+        let profileName = (tunnelRunning ? appliedRouting?.profileName : nil) ?? selection?.profileName
+        guard let profileName,
+              let profileText = SharedConfig.loadProfile(name: profileName),
               let profile = try? OVPNParser().parse(profileText) else {
             return false
         }
@@ -604,7 +685,10 @@ final class VPNManager: ObservableObject {
     }
 
     private func updateProxyAvailability() {
-        let isForwardingAllowed = status == .connected && (selection?.domainRouting == true || selection?.routingMode.includesBrowser == true)
+        // While connected, the routing the tunnel was started with; a change
+        // made meanwhile applies when it reconnects.
+        let mode = (tunnelRunning ? appliedRouting?.routingMode : nil) ?? selection?.routingMode
+        let isForwardingAllowed = status == .connected && mode?.includesBrowser == true
         SharedConfig.saveRuntimeState(SharedConfig.RuntimeState(
             vpnStatus: Self.displayStatus(for: status),
             forwardingAllowed: isForwardingAllowed,

@@ -146,8 +146,8 @@ struct ProfileScanSheet: View {
                 }
             }
 
-            SetupStep(number: 1, done: phase == .results, title: "Choose where to look") {
-                VStack(alignment: .leading, spacing: 10) {
+            SetupStep(number: 1, done: phase != .choosing, title: "Choose where to look") {
+                VStack(alignment: .leading, spacing: 8) {
                     LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
                               alignment: .leading, spacing: 6) {
                         ForEach(availableSources) { source in
@@ -156,47 +156,46 @@ struct ProfileScanSheet: View {
                                 set: { if $0 { sources.insert(source) } else { sources.remove(source) } }
                             ))
                             .toggleStyle(.checkbox)
+                            .disabled(phase == .scanning)
                         }
                     }
                     HStack(spacing: 8) {
+                        Text("macOS asks for access to each folder the first time.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(SemiTheme.textMuted)
                         if phase == .results {
+                            Spacer()
                             Button("Search Again", action: scan)
-                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                                 .disabled(sources.isEmpty)
-                        } else {
-                            Button("Find Profiles", action: scan)
-                                .buttonStyle(.borderedProminent)
-                                .keyboardShortcut(.defaultAction)
-                                .disabled(sources.isEmpty || phase == .scanning)
-                        }
-                        if phase == .scanning {
-                            ProgressView().controlSize(.small)
-                            Text("Looking for profiles…")
-                                .font(.system(size: 11))
-                                .foregroundStyle(SemiTheme.textMuted)
-                        } else {
-                            Text("macOS asks for access to each folder the first time.")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(SemiTheme.textMuted)
                         }
                     }
                 }
             }
 
-            SetupStep(number: 2, done: false, title: "Choose the profiles to import") {
-                switch phase {
-                case .choosing, .scanning:
-                    Text("The profiles SemiVPN finds appear here.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(SemiTheme.textMuted)
-                case .results:
-                    if found.isEmpty {
-                        Text("No .ovpn files in the chosen folders. Choose other folders, or use Import Profile… to pick a file.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(SemiTheme.textMuted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        resultList
+            // The second step appears once the search has started.
+            if phase != .choosing {
+                SetupStep(number: 2, done: false, title: "Choose the profiles to import") {
+                    switch phase {
+                    case .choosing, .scanning:
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Looking for profiles…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(SemiTheme.textMuted)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(SemiTheme.panelRaised.opacity(0.5)))
+                    case .results:
+                        if found.isEmpty {
+                            Text("No .ovpn files in the chosen folders. Choose other folders and search again, or use Import Profile… to pick a file.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(SemiTheme.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            resultList
+                        }
                     }
                 }
             }
@@ -213,13 +212,20 @@ struct ProfileScanSheet: View {
                 Button("Cancel") { dismiss() }
                     .buttonStyle(.bordered)
                     .keyboardShortcut(.cancelAction)
-                Button(chosen.count > 1 ? "Import \(chosen.count) Profiles" : "Import") {
-                    onImport(found.map(\.url).filter { chosen.contains($0) })
-                    dismiss()
+                if phase == .results {
+                    Button(chosen.count > 1 ? "Import \(chosen.count) Profiles" : "Import") {
+                        onImport(found.map(\.url).filter { chosen.contains($0) })
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(chosen.isEmpty)
+                } else {
+                    Button("Find Profiles", action: scan)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(sources.isEmpty || phase == .scanning)
                 }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(phase == .results ? .defaultAction : nil)
-                .disabled(phase != .results || chosen.isEmpty)
             }
         }
         .padding(22)
@@ -306,15 +312,16 @@ struct ProfileScanSheet: View {
 
 #if DEBUG
 extension ProfileScanSheet {
-    /// Sample results for UISnapshots: name, host and folder of each.
-    init(previewResults: [(name: String, host: String, folder: String)]) {
+    /// Sample results for UISnapshots: name, host and folder of each; or
+    /// the search in progress.
+    init(previewResults: [(name: String, host: String, folder: String)], scanning: Bool = false) {
         let found = previewResults.map {
             Found(url: URL(fileURLWithPath: "/tmp/\($0.name).ovpn"), name: $0.name, host: $0.host, folder: $0.folder)
         }
         self.init(onImport: { _ in })
         _found = State(initialValue: found)
         _chosen = State(initialValue: Set(found.map(\.url)))
-        _phase = State(initialValue: .results)
+        _phase = State(initialValue: scanning ? .scanning : .results)
     }
 }
 #endif

@@ -79,6 +79,9 @@ enum UISnapshots {
             Screen(name: "find-profiles", width: 540) {
                 AnyView(ProfileScanSheet { _ in })
             },
+            Screen(name: "find-profiles-scanning", width: 540) {
+                AnyView(ProfileScanSheet(previewResults: [], scanning: true))
+            },
             Screen(name: "find-profiles-results", width: 540) {
                 AnyView(ProfileScanSheet(previewResults: [
                     ("berlin-office", "vpn.berlin.example.com", "Downloads"),

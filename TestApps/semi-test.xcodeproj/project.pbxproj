@@ -10,14 +10,19 @@
 		0B9711428BD2D0A840DACA1D /* TestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95EB53C4978FC311802526E /* TestApp.swift */; };
 		7C681A137AB0D169C5FD3803 /* TestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95EB53C4978FC311802526E /* TestApp.swift */; };
 		87B4CA370D8FAB84EDCE42DB /* InfoA.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3A5C4D8A8EBA1639C277A676 /* InfoA.plist */; };
+		A1D7CC4634C101100584934B /* TestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F95EB53C4978FC311802526E /* TestApp.swift */; };
+		EBF2BAFCAC28A85984BCC6F3 /* InfoC.plist in Resources */ = {isa = PBXBuildFile; fileRef = 92FEAA75A3313E220F0171BE /* InfoC.plist */; };
 		F4F4DB4DDADF419B448E7153 /* InfoB.plist in Resources */ = {isa = PBXBuildFile; fileRef = 4E4B7FAA4CF3C683AAD136D4 /* InfoB.plist */; };
+		F740901A9155BEE5D51D55D8 /* InfoC.plist in Resources */ = {isa = PBXBuildFile; fileRef = 92FEAA75A3313E220F0171BE /* InfoC.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		3A5C4D8A8EBA1639C277A676 /* InfoA.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = InfoA.plist; sourceTree = "<group>"; };
 		4E4B7FAA4CF3C683AAD136D4 /* InfoB.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = InfoB.plist; sourceTree = "<group>"; };
 		719EBE830DA326D134120B75 /* SemiTestA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SemiTestA.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		92FEAA75A3313E220F0171BE /* InfoC.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = InfoC.plist; sourceTree = "<group>"; };
 		DBAC92D1E6E220209F9A89B8 /* SemiTestB.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SemiTestB.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EEFE3894C3E9DCD03F7C43DA /* SemiTestC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SemiTestC.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F95EB53C4978FC311802526E /* TestApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -35,6 +40,7 @@
 			children = (
 				3A5C4D8A8EBA1639C277A676 /* InfoA.plist */,
 				4E4B7FAA4CF3C683AAD136D4 /* InfoB.plist */,
+				92FEAA75A3313E220F0171BE /* InfoC.plist */,
 				F95EB53C4978FC311802526E /* TestApp.swift */,
 			);
 			path = TestApp;
@@ -45,6 +51,7 @@
 			children = (
 				719EBE830DA326D134120B75 /* SemiTestA.app */,
 				DBAC92D1E6E220209F9A89B8 /* SemiTestB.app */,
+				EEFE3894C3E9DCD03F7C43DA /* SemiTestC.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -68,6 +75,23 @@
 			);
 			productName = SemiTestB;
 			productReference = DBAC92D1E6E220209F9A89B8 /* SemiTestB.app */;
+			productType = "com.apple.product-type.application";
+		};
+		9F9D31ADE873E0E5445256AD /* SemiTestC */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CAD55F1EA5591323B90D21FA /* Build configuration list for PBXNativeTarget "SemiTestC" */;
+			buildPhases = (
+				6AEAC84FB9D2D61699C9FF05 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SemiTestC;
+			packageProductDependencies = (
+			);
+			productName = SemiTestC;
+			productReference = EEFE3894C3E9DCD03F7C43DA /* SemiTestC.app */;
 			productType = "com.apple.product-type.application";
 		};
 		E2000EF9E03753ECF2058D27 /* SemiTestA */ = {
@@ -100,6 +124,9 @@
 					2A4AEADD2EAB67A0E286DD9D = {
 						ProvisioningStyle = Manual;
 					};
+					9F9D31ADE873E0E5445256AD = {
+						ProvisioningStyle = Manual;
+					};
 					E2000EF9E03753ECF2058D27 = {
 						ProvisioningStyle = Manual;
 					};
@@ -121,6 +148,7 @@
 			targets = (
 				E2000EF9E03753ECF2058D27 /* SemiTestA */,
 				2A4AEADD2EAB67A0E286DD9D /* SemiTestB */,
+				9F9D31ADE873E0E5445256AD /* SemiTestC */,
 			);
 		};
 /* End PBXProject section */
@@ -131,6 +159,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F4F4DB4DDADF419B448E7153 /* InfoB.plist in Resources */,
+				EBF2BAFCAC28A85984BCC6F3 /* InfoC.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -139,12 +168,21 @@
 			buildActionMask = 2147483647;
 			files = (
 				87B4CA370D8FAB84EDCE42DB /* InfoA.plist in Resources */,
+				F740901A9155BEE5D51D55D8 /* InfoC.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		6AEAC84FB9D2D61699C9FF05 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1D7CC4634C101100584934B /* TestApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		71CF32B584AC79B13B942767 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -216,6 +254,25 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.semivpn.test.a;
 				PRODUCT_NAME = SemiTestA;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		856D8A75A4391C7346C03403 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = TestApp/InfoC.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.semivpn.test.c;
+				PRODUCT_NAME = SemiTestC;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
 			};
@@ -295,6 +352,25 @@
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
+		};
+		CFB866D1BDF159F437430304 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = TestApp/InfoC.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.semivpn.test.c;
+				PRODUCT_NAME = SemiTestC;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
 		};
 		FC35643C815239657418D8C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -376,6 +452,15 @@
 			buildConfigurations = (
 				1D8A4049E71A1071F25E3077 /* Debug */,
 				3A8D525A459AFEF149B6DC42 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CAD55F1EA5591323B90D21FA /* Build configuration list for PBXNativeTarget "SemiTestC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CFB866D1BDF159F437430304 /* Debug */,
+				856D8A75A4391C7346C03403 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

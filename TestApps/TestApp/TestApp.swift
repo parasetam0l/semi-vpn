@@ -16,7 +16,7 @@ struct IPView: View {
     @State private var lastUpdate = ""
     @State private var error: String?
 
-    private let timer = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
+    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 10) {
@@ -45,10 +45,17 @@ struct IPView: View {
         .disabled(ip == "checking…")
     }
 
+    /// A new connection for every check: a reused one keeps the route it was
+    /// opened on, which hides a change in the per-app VPN rules.
     private func refresh() {
         var request = URLRequest(url: URL(string: "https://ifconfig.me/ip")!)
         request.timeoutInterval = 8
-        URLSession.shared.dataTask(with: request) { data, _, err in
+        request.setValue("close", forHTTPHeaderField: "Connection")
+        let session = URLSession(configuration: .ephemeral)
+        session.dataTask(with: request) { data, _, err in
+            session.finishTasksAndInvalidate()
+            Self.record(data.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "error: \(err?.localizedDescription ?? "no response")")
             DispatchQueue.main.async {
                 if let data,
                    let text = String(data: data, encoding: .utf8)?
@@ -62,6 +69,23 @@ struct IPView: View {
                 }
             }
         }.resume()
+    }
+
+    /// Appends each result to ~/Library/Logs/SemiTest/<bundle id>.log, so a
+    /// test can follow it without looking at the window.
+    private static func record(_ result: String) {
+        let folder = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/SemiTest", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent((Bundle.main.bundleIdentifier ?? "semi-test") + ".log")
+        let line = "\(timeFormatter.string(from: Date())) \(result)\n"
+        if let handle = try? FileHandle(forWritingTo: file) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: file)
+        }
     }
 
     private static let timeFormatter: DateFormatter = {

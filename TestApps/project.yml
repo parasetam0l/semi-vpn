@@ -43,3 +43,25 @@ targets:
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
+  SemiTestC:
+    type: application
+    platform: macOS
+    sources:
+      - path: TestApp
+        excludes:
+          - InfoA.plist
+          - InfoB.plist
+    info:
+      path: TestApp/InfoC.plist
+      properties:
+        CFBundleDisplayName: Semi Test C
+        CFBundleName: Semi Test C
+        LSMinimumSystemVersion: "14.0"
+        NSHighResolutionCapable: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.semivpn.test.c
+        PRODUCT_NAME: SemiTestC
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"

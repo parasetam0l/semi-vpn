@@ -4,6 +4,12 @@ options:
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
+settings:
+  base:
+    # The maintainer's team, which owns the com.semivpn.* bundle IDs. To sign
+    # with your own team, build with DEVELOPMENT_TEAM=<team ID> and change
+    # bundleIdPrefix and the bundle identifiers below.
+    DEVELOPMENT_TEAM: P7V7795SS9
 packages:
   OpenVPNCore:
     path: .

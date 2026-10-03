@@ -209,7 +209,9 @@ running SemiVPN is not affected.
 - **Xcode 15.0** or later
 - **XcodeGen**: `brew install xcodegen`
 - **OpenSSL 3**: `brew install openssl@3` (found automatically on Apple Silicon and Intel; set `OPENSSL_ROOT` for another location)
-- An **Apple Developer Account** (for signing Network Extensions)
+- A paid **Apple Developer Program** membership, individual or organization, signed in to Xcode (Settings → Accounts). Free personal teams cannot sign Network Extensions.
+
+The signing team is `DEVELOPMENT_TEAM` in `project.yml`, the maintainer's team that owns the `com.semivpn.*` bundle IDs. To build with your own team, run `DEVELOPMENT_TEAM=YOUR_TEAM_ID ./Scripts/build-dev.sh` and change the bundle identifiers in `project.yml`, because a bundle ID can belong to only one team.
 
 ### One-Step Build & Install
 
@@ -241,6 +243,7 @@ xcodebuild \
   -project semi-vpn.xcodeproj \
   -scheme semi-vpn \
   -configuration Debug \
+  -allowProvisioningUpdates \
   CODE_SIGNING_ALLOWED=YES \
   CODE_SIGNING_REQUIRED=YES \
   build
@@ -323,10 +326,10 @@ SemiVPN has been validated byte-for-byte against:
 
 ## Distribution & Signing
 
-`TunnelProvider` is packaged as a Network Extension **app extension** (`.appex`). macOS only accepts app-extension NE providers for development builds and Mac App Store distribution:
+`TunnelProvider` is packaged as a Network Extension **app extension** (`.appex`). macOS only accepts app-extension NE providers for development builds and Mac App Store distribution ([TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment)). A development build runs only on the Macs registered to the signing team:
 
-- **Mac App Store**: sign with App Store distribution profiles that include the `packet-tunnel-provider` entitlement and the shared keychain group, then submit through App Store Connect.
-- **Developer ID (outside the App Store)**: Apple requires Network Extension providers to be packaged as a **System Extension** (`packet-tunnel-provider-systemextension`, activated with `OSSystemExtensionRequest`). That packaging is not implemented yet; the existing provider code can be reused, but the target type, entitlements and activation flow have to change before a notarized Developer ID build will work.
+- **Mac App Store**: sign with App Store distribution profiles that include the `packet-tunnel-provider` entitlement and the shared keychain group, then submit through App Store Connect. App Review Guideline 5.4 allows VPN apps only from developers **enrolled as an organization**, so this route needs an organization membership.
+- **Developer ID (outside the App Store)**: available to individual and organization memberships. Apple requires Network Extension providers to be packaged as a **System Extension** (`packet-tunnel-provider-systemextension`, activated with `OSSystemExtensionRequest`). That packaging is not implemented yet; the existing provider code can be reused, but the target type, entitlements and activation flow have to change before a notarized Developer ID build will work.
 
 All targets build with the Hardened Runtime, which notarization requires.
 

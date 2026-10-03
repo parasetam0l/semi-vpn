@@ -3,10 +3,9 @@
 Releases are built by the **Release** GitHub Actions workflow
 (`.github/workflows/release.yml`). It runs only when started by hand, signs
 SemiVPN with a Developer ID certificate, has Apple notarize it, and creates a
-**draft** GitHub release with:
-
-- `SemiVPN-<version>.dmg`: the notarized app (macOS 14+, Apple silicon)
-- `SemiVPN-BrowserExtension-<version>.zip`: the browser extension
+**draft** GitHub release with `SemiVPN-<version>.dmg`, the notarized app
+(macOS 14+, Apple silicon). The browser extension is inside the app, which
+installs it into the folder browsers load it from and keeps it updated there.
 
 The repository is public, so the macOS runner minutes are free.
 
@@ -94,9 +93,11 @@ in your keychain.
 1. GitHub → **Actions** → **Release** → **Run workflow**, enter the version
    (e.g. `1.2.0`) and run it. It takes about 15–30 minutes, most of it
    waiting for Apple's notary service.
-2. GitHub → **Releases**: review the draft (notes are generated from the
-   commits since the previous release) and **Publish** it. Publishing
-   creates the `v<version>` tag.
+2. GitHub → **Releases**: edit the draft's notes and **Publish** it.
+   Publishing creates the `v<version>` tag. The notes have install and update
+   steps and the subjects of the commits since the previous release: add a
+   short summary of what changed for users and remove internal entries
+   (build, docs).
 
 If a step fails, its log says why; the xcodebuild log is attached to the run
 as an artifact, and a notarization failure prints Apple's report.

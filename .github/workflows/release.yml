@@ -1,6 +1,6 @@
 # Builds SemiVPN signed with Developer ID, notarizes it, and creates a
-# draft GitHub release with the DMG and the browser extension. It runs only
-# when started by hand: Actions → Release → Run workflow.
+# draft GitHub release with the DMG. It runs only when started by hand:
+# Actions → Release → Run workflow.
 #
 # One-time setup (certificate, profiles, secrets): docs/RELEASING.md.
 name: Release
@@ -59,6 +59,8 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the release notes list the commits since the last release
 
       - name: Install tools
         run: brew install xcodegen openssl@3
@@ -148,28 +150,39 @@ jobs:
           xcrun stapler staple "$dmg"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
-      - name: Package the browser extension
-        run: |
-          zip_file="$RUNNER_TEMP/SemiVPN-BrowserExtension-$VERSION.zip"
-          (cd "$APP/Contents/Resources/ChromeExtension" && zip -qr "$zip_file" .)
-          echo "EXTENSION_ZIP=$zip_file" >> "$GITHUB_ENV"
-
       - name: Create the draft release
         run: |
-          cat > "$RUNNER_TEMP/notes.md" <<EOF
-          **Requirements:** macOS 14 or later on Apple silicon.
+          # GitHub's generated notes list merged pull requests, and this
+          # repository is committed to directly: list the commits instead.
+          previous="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          {
+            cat <<EOF
+          ## Install
 
-          **Install:** open the DMG and drag SemiVPN to Applications. On first launch, allow SemiVPN's network extension in System Settings → General → Login Items & Extensions → Network Extensions. The browser extension is set up from SemiVPN's Browser tab; the zip below is the same extension for manual installs.
+          Open SemiVPN-$VERSION.dmg and drag SemiVPN to Applications. On first launch, allow SemiVPN's network extension in System Settings → General → Login Items & Extensions → Network Extensions. To route sites in Chrome or another Chromium browser, set up the browser extension from SemiVPN's Browser tab.
+
+          **Updating:** quit SemiVPN, then drag the new version to Applications and replace the old one. The network extension updates by itself; when SemiVPN asks, click Reload on the browser extension.
+
+          Requires macOS 14 or later on Apple silicon.
+
+          ## Changes
 
           EOF
-          gh release create "v$VERSION" "$DMG" "$EXTENSION_ZIP" \
+            if [[ -n "$previous" ]]; then
+              git log --no-merges --reverse --format='- %s' "$previous..HEAD"
+              printf '\n**Full changelog:** https://github.com/%s/compare/%s...v%s\n' "$GITHUB_REPOSITORY" "$previous" "$VERSION"
+            else
+              echo "First release."
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" "$DMG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "SemiVPN $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            --generate-notes \
             --draft
-          echo "Draft release created: review and publish it under Releases." >> "$GITHUB_STEP_SUMMARY"
+          echo "Draft release created: edit the notes and publish it under Releases." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the build log
         if: failure()

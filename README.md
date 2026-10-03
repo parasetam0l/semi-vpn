@@ -143,20 +143,20 @@ A SwiftUI management console featuring:
 
 ## Chrome Companion Extension
 
-Located in `ChromeExtension/`, this Manifest V3 extension enables seamless domain-based split tunneling in Google Chrome:
+Located in `ChromeExtension/`, this Manifest V3 extension enables domain-based split tunneling in Google Chrome and other Chromium browsers (Edge, Brave, Vivaldi, Opera, Arc):
 
 - **PAC Routing**: Automatically manages Chrome's proxy settings via a dynamic PAC (Proxy Auto-Config) script. Listed domains route to `127.0.0.1:49280`, while all other traffic goes `DIRECT`.
 - **Instant Cache-First UI**: Rendered instantly using cached rules and connection states with asynchronous background revalidation.
 - **On-The-Fly Detection**: Detects the active tab's domain and lets you add it, specify all-subdomains or exact-domain-plus-www scope, or pause/resume routing with one click.
-- **Status Badges**: Real-time toolbar icon badges reflecting domain routing state (`ON`, `OFF`, `DISC`).
+- **Status Badges**: Real-time toolbar icon badges reflecting domain routing state (`ON`, `OFF`, `DISC`, `BLK`), and `UPD` when the extension needs a manual update.
+- **Self-Updating**: The app installs each new extension build into the folder the browser loads it from, and the extension reloads itself into it. When that is not possible, the popup, the toolbar badge, the app's Browser tab and a notification ask for a manual reload.
 - **Disconnected Behavior**: Listed domains connect directly while the VPN is down (default), or are blocked when the app's fail-closed option is on; in that mode the PAC has no `DIRECT` fallback. Non-browser routing modes get an all-`DIRECT` PAC script. See [ChromeExtension/README.md](ChromeExtension/README.md).
 
 ### Loading the Extension
 
-1. In SemiVPN, open the **Browser** workspace and click **Prepare** (or copy `ChromeExtension/` to a permanent location).
-2. In Google Chrome, navigate to `chrome://extensions/`.
-3. Enable **Developer mode** in the top-right corner.
-4. Click **Load unpacked** and select the prepared extension folder (`~/Library/Application Support/SemiVPN/ChromeExtension` or the project's `ChromeExtension/` directory).
+Chrome on macOS only installs extensions from the Chrome Web Store (or by policy on managed Macs), so the extension is loaded unpacked once per browser profile. In SemiVPN's **Browser** workspace, choose **Set up in Google Chrome…** (or another installed browser) and follow the three steps: open the Extensions page, turn on **Developer mode**, then drag the SemiVPN folder onto the page (or **Load unpacked** with the copied path, `~/Library/Application Support/SemiVPN/ChromeExtension`). The sheet completes when the extension first checks in, and the Browser workspace lists every browser profile running it.
+
+Later updates need no setup. A browser that runs the extension from another folder (for example the project's `ChromeExtension/` directory during development) cannot update itself; SemiVPN then shows the steps to reload it or load the SemiVPN folder instead.
 
 ---
 
@@ -196,8 +196,12 @@ KEEP_WORK=1 Scripts/integration-tests.sh reneg   # keep client/server logs
 
 `Scripts/proxy-tests.sh` builds SemiProxy unsigned and tests the browser
 proxy and its control API on scratch ports with a scratch configuration
-(`SEMIVPN_CONTAINER`, `SEMIVPN_PROXY_PORT`, `SEMIVPN_CONTROL_PORT`), so a
-running SemiVPN is not affected.
+(`SEMIVPN_CONTAINER`, `SEMIVPN_EXTENSION_DIR`, `SEMIVPN_PROXY_PORT`,
+`SEMIVPN_CONTROL_PORT`), so a running SemiVPN is not affected.
+
+`node Scripts/extension-tests.mjs` (Node 18+) tests the extension's update
+logic (build reports, reloading into a new build, the manual-update
+fallback) against a mocked `chrome` API.
 
 ---
 
@@ -268,7 +272,7 @@ Executes 71 unit tests covering:
 - TCP packet framing, buffering, and fragmentation
 - Profile parsing (protocols, remotes, quoting, file inlining, unsupported features) and `PUSH_REPLY`/control-message parsing
 
-End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 49 scenarios, and `Scripts/proxy-tests.sh` tests the browser proxy and its control API (10 checks) against an isolated SemiProxy instance.
+End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 49 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (13 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
 
 ---
 
@@ -278,7 +282,9 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 ├── App/                      # Main SwiftUI application and state managers
 │   ├── ContentView.swift     # 5-section workspace UI (Overview, Routing, Browser, etc.)
 │   ├── VPNManager.swift      # NETunnelProviderManager controller
-│   ├── ChromeExtensionInstaller.swift # Extension staging and sync manager
+│   ├── ChromeExtensionInstaller.swift # Extension folder, browsers, Extensions page
+│   ├── ExtensionMonitor.swift # Which browsers run which extension build
+│   ├── BrowserExtensionPanel.swift # Extension status, setup guide, update steps
 │   └── LocalProxyServer.swift# HTTP CONNECT loopback proxy core
 ├── ChromeExtension/          # Chrome Manifest V3 companion extension
 ├── Package.swift             # Swift Package Manager manifest for core libraries
@@ -289,9 +295,12 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 │   ├── build-dev.sh          # Automated build, sign, verify & install pipeline
 │   ├── integration-tests.sh  # ovpn-cli against a real OpenVPN server
 │   ├── proxy-tests.sh        # SemiProxy and its control API in isolation
+│   ├── extension-tests.mjs   # Extension update logic with a mocked chrome API
+│   ├── stamp-extension.sh    # Stamps the bundled extension's build fingerprint
 │   └── openssl-*.sh          # Locate, stage and bundle OpenSSL for Xcode
 ├── Shared/                   # Shared configurations and data models
 │   ├── SharedConfig.swift    # Routing modes, domain models, and IPC constants
+│   ├── BrowserExtension.swift # Extension folder, build IDs and browser reports
 │   └── TunnelSecrets.swift   # Keychain hand-off of profiles and credentials
 ├── Sources/
 │   ├── COpenVPNTLS/          # C OpenSSL 3 shim (memory BIOs, TLS session exporter)

@@ -1,7 +1,8 @@
-# SemiVPN Domain Routing Chrome extension
+# SemiVPN Domain Routing extension
 
-This is a Chrome Manifest V3 unpacked extension. It installs a PAC script with
-the proxy permission and sends only listed domains to SemiVPN's local proxy
+This is a Manifest V3 extension for Google Chrome and other Chromium browsers
+(Edge, Brave, Vivaldi, Opera, Arc). It installs a PAC script with the proxy
+permission and sends only listed domains to SemiVPN's local proxy
 (`[::1]:49280`, then `127.0.0.1:49280`); every other host returns DIRECT.
 
 The popup shows the active tab's hostname. An unlisted hostname gets only an
@@ -10,36 +11,53 @@ included. If not, the rule covers the exact hostname and its `www` variant.
 A listed hostname shows **Active**, **Paused**, or **Passive** state, can be
 paused or resumed, and can be removed from the list. The full domain list is
 managed in the SemiVPN app; the extension never displays it. The popup also
-shows the current VPN connection status and uses the SemiVPN application icon.
+shows the current VPN connection status and the extension's version.
 
 The extension ID is pinned by the `key` in `manifest.json`
-(`jaiknknmjmncnocbcbneepnefhokegma`), whatever folder it is loaded from.
-SemiVPN's local control API only accepts requests from that ID. Remove the
-`key` before uploading the extension to the Chrome Web Store, which assigns
-its own.
+(`jaiknknmjmncnocbcbneepnefhokegma`), whatever folder or browser it is loaded
+in. SemiVPN's local control API only accepts requests from that ID. Remove
+the `key` before uploading the extension to the Chrome Web Store, which
+assigns its own.
 
-## Development install
+## Setup
 
-1. Build and run SemiVPN once so its localhost API is listening.
-2. Open chrome://extensions, enable Developer mode, and choose Load unpacked.
-3. Select this ChromeExtension directory.
-4. In SemiVPN's Routing screen choose one of the four modes: All apps,
-   Selected apps only, Selected apps + browser, or Browser only.
-5. Connect the VPN. Browser-only mode keeps other applications direct while
-   routing SemiVPN's local browser proxy through the VPN.
-6. Manage the complete domain list in SemiVPN's Browser tab. In the extension,
-   add the currently open website and choose its subdomain scope, or
-   pause/resume/remove that current rule.
+Chrome on macOS installs extensions only from the Chrome Web Store, or by
+policy on Macs managed through MDM, so the extension is loaded unpacked once
+per browser profile:
 
-## Offline setup from the SemiVPN app
+1. In SemiVPN's **Browser** tab, choose **Set up in Google Chrome…** (or
+   another installed browser). SemiVPN copies the extension to
+   `~/Library/Application Support/SemiVPN/ChromeExtension`.
+2. Open the browser's Extensions page from the setup sheet and turn on
+   **Developer mode**.
+3. Drag the folder from the sheet onto the Extensions page, or choose **Load
+   unpacked**, press ⌘⇧G and paste the copied path.
 
-The macOS app includes a copy of this extension. Open SemiVPN's **Browser**
-tab, choose **Prepare** in the Chrome extension section, then choose **Open
-Chrome setup**. In Chrome, enable Developer mode and choose **Load unpacked**. Select
-the folder shown in SemiVPN (normally
-`~/Library/Application Support/SemiVPN/ChromeExtension`). This is a one-time
-manual step per Mac; Chrome does not allow a regular macOS app to silently
-install a local unpacked extension.
+The sheet completes when the extension first checks in. The Browser tab then
+lists every browser profile running the extension, with its version and
+state.
+
+## Updates
+
+Each SemiVPN build stamps the bundled extension with a fingerprint of its
+files (`version_name`, e.g. `0.4.0 (1a2b3c4)`), and the app copies a new
+build into the extension folder when it starts. The extension reports the
+build it runs with each status request (about once a minute) and, when the
+app's folder holds a different build, reloads itself into it. No user action
+is needed.
+
+When a reload does not bring the new build (the browser loads the extension
+from another folder), the extension stops retrying and asks for a manual
+update: the popup shows an update card with **Reload now**, **Extensions
+page** and the folder to load, tabs without a routing badge show `UPD`, and
+the app's Browser tab shows the steps and notifies once per build.
+
+## Development
+
+Loading this `ChromeExtension/` directory directly works for development.
+Such a copy is never updated by the app, so after an app update the popup
+and the app report it as needing a manual update; reload it after editing.
+`node Scripts/extension-tests.mjs` tests the update logic.
 
 ## Routing behavior
 

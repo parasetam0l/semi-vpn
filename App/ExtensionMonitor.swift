@@ -9,6 +9,10 @@ import Foundation
 /// profile still running an old build after that (it loads the extension
 /// from another folder, or the reload failed) needs a manual update; the user
 /// is told so in the Browser tab and notified once per build.
+///
+/// It also watches whether the browser traffic really uses the VPN: SemiProxy
+/// reports when macOS routes it outside the tunnel (see
+/// SharedConfig.ProxyHealth), which the window offers to repair.
 @MainActor
 final class ExtensionMonitor: ObservableObject {
     static let shared = ExtensionMonitor()
@@ -43,6 +47,12 @@ final class ExtensionMonitor: ObservableObject {
     @Published private(set) var isPrepared = false
     /// The build this app ships and installs into the extension folder.
     @Published private(set) var expectedBuild: String?
+    /// The VPN is connected for the browser, but macOS routes SemiProxy
+    /// outside it, so listed sites are blocked or go direct.
+    @Published private(set) var browserRoutingBroken = false
+    /// Whether listed sites are blocked (fail-closed) rather than direct
+    /// while the VPN is unavailable to them.
+    @Published private(set) var blocksListedSites = false
 
     var expectedVersion: String? { expectedBuild.map(BrowserExtension.version(ofBuild:)) }
     var profilesNeedingUpdate: [Profile] { profiles.filter { $0.status == .updateNeeded } }
@@ -66,10 +76,10 @@ final class ExtensionMonitor: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
             Task { @MainActor in ExtensionMonitor.shared.refresh() }
         }
-        DistributedNotificationCenter.default().addObserver(
-            forName: BrowserExtension.reportsDidChangeNotification, object: nil, queue: .main
-        ) { _ in
-            Task { @MainActor in ExtensionMonitor.shared.refresh() }
+        for name in [BrowserExtension.reportsDidChangeNotification, SharedConfig.proxyHealthDidChangeNotification] {
+            DistributedNotificationCenter.default().addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in ExtensionMonitor.shared.refresh() }
+            }
         }
     }
 
@@ -99,6 +109,26 @@ final class ExtensionMonitor: ObservableObject {
         next.sort { ($0.isActive ? 0 : 1, $0.label) < ($1.isActive ? 0 : 1, $1.label) }
         if next != profiles { profiles = next }
         notifyAboutNewUpdateNeeds()
+        refreshRoutingHealth()
+    }
+
+    private func refreshRoutingHealth() {
+        let blocks = SharedConfig.loadDomainConfiguration().blockWhenDisconnected
+        if blocks != blocksListedSites { blocksListedSites = blocks }
+        let broken = SharedConfig.loadProxyHealth()?.tunnelBypassed == true
+            && SharedConfig.loadRuntimeState().forwardingAllowed
+        guard broken != browserRoutingBroken else { return }
+        browserRoutingBroken = broken
+        guard broken else {
+            AppLogger.log("routing: browser traffic uses the VPN again")
+            return
+        }
+        AppLogger.log("routing: macOS routes SemiProxy outside the VPN")
+        (NSApp.delegate as? AppDelegate)?.postNotification(
+            title: "Browser traffic is not using the VPN",
+            body: (blocks ? "Listed sites are blocked: " : "Listed sites use your regular connection: ")
+                + "macOS stopped routing SemiVPN’s browser proxy through the VPN. Open SemiVPN and choose Repair VPN Routing."
+        )
     }
 
     private func status(of report: BrowserExtension.Report, isActive: Bool, now: Date) -> Status {

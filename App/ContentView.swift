@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var vpnManager: VPNManager
+    @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
+    @State private var routingRepairPhase: RoutingRepairPhase = .idle
     @State private var profiles: [String] = []
     @State private var selectedProfile: String?
     @State private var selectedApps: Set<String> = []
@@ -61,6 +63,13 @@ struct ContentView: View {
                     .fill(SemiTheme.line)
                     .frame(height: 1)
                 sectionContent
+                if extensionMonitor.browserRoutingBroken || routingRepairPhase.isBusy {
+                    RoutingRepairBanner(
+                        blocksListedSites: extensionMonitor.blocksListedSites,
+                        phase: routingRepairPhase,
+                        onRepair: repairVPNRouting
+                    )
+                }
                 if workspaceSection != .overview {
                     Rectangle()
                         .fill(SemiTheme.line)
@@ -75,6 +84,9 @@ struct ContentView: View {
         .onAppear {
             refresh()
             AppLogger.log("app launched")
+        }
+        .onChange(of: extensionMonitor.browserRoutingBroken) { _, broken in
+            if !broken, !routingRepairPhase.isBusy { routingRepairPhase = .idle }
         }
         .onChange(of: routingMode) { _, _ in
             guard !configurationLocked else { return }
@@ -2157,6 +2169,53 @@ struct ContentView: View {
                 AppLogger.log("connect failed: \(error)")
             }
             connecting = false
+        }
+    }
+
+    // MARK: - VPN routing repair
+
+    /// Restarts the macOS VPN service (the user enters an administrator
+    /// password), reconnects, and waits for SemiProxy to confirm that it is
+    /// routed through the VPN again.
+    private func repairVPNRouting() {
+        guard !routingRepairPhase.isBusy else { return }
+        routingRepairPhase = .restartingService
+        AppLogger.log("routing repair: restarting the macOS VPN service")
+        VPNRoutingRepair.restartVPNService { result in
+            switch result {
+            case .failure(.cancelled):
+                routingRepairPhase = .idle
+            case .failure(.failed(let message)):
+                AppLogger.log("routing repair failed: \(message)")
+                routingRepairPhase = .failed(message)
+            case .success:
+                routingRepairPhase = .reconnecting
+                // launchd starts the service again at once; give it a moment
+                // to load the VPN configurations.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    let reconnectStarted = Date()
+                    connect()
+                    routingRepairPhase = .verifying
+                    verifyRoutingRepair(since: reconnectStarted, remainingChecks: 30)
+                }
+            }
+        }
+    }
+
+    private func verifyRoutingRepair(since start: Date, remainingChecks: Int) {
+        if let health = SharedConfig.loadProxyHealth(), health.checkedAt > start,
+           SharedConfig.loadRuntimeState().forwardingAllowed {
+            AppLogger.log("routing repair: \(health.tunnelBypassed ? "still outside the VPN" : "browser traffic uses the VPN again")")
+            routingRepairPhase = health.tunnelBypassed ? .stillBroken : .idle
+            extensionMonitor.refresh()
+            return
+        }
+        guard remainingChecks > 0 else {
+            routingRepairPhase = extensionMonitor.browserRoutingBroken ? .stillBroken : .idle
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            verifyRoutingRepair(since: start, remainingChecks: remainingChecks - 1)
         }
     }
 

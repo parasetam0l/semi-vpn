@@ -133,6 +133,12 @@ public enum SharedConfig {
         try? data.write(to: url, options: .atomic)
     }
 
+    /// No current observation (the VPN is not connected).
+    public static func clearProxyHealth() {
+        guard let url = proxyHealthURL else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     public static func loadProxyHealth() -> ProxyHealth? {
         guard let url = proxyHealthURL, let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()

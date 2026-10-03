@@ -391,8 +391,14 @@ final class LocalProxyServer {
         publishHealth(tunnelBypassed: !tunneled)
     }
 
-    private func publishHealth(tunnelBypassed: Bool) {
-        SharedConfig.saveProxyHealth(SharedConfig.ProxyHealth(tunnelBypassed: tunnelBypassed))
+    /// Saves the observation for the app, or clears it (nil) when there is
+    /// none, and tells the app.
+    private func publishHealth(tunnelBypassed: Bool?) {
+        if let tunnelBypassed {
+            SharedConfig.saveProxyHealth(SharedConfig.ProxyHealth(tunnelBypassed: tunnelBypassed))
+        } else {
+            SharedConfig.clearProxyHealth()
+        }
         DistributedNotificationCenter.default().postNotificationName(
             SharedConfig.proxyHealthDidChangeNotification, object: nil, userInfo: nil, deliverImmediately: true
         )
@@ -412,7 +418,7 @@ final class LocalProxyServer {
                 self?.checkCoverage { _ in }
             }
         } else {
-            publishHealth(tunnelBypassed: false)
+            publishHealth(tunnelBypassed: nil)
         }
     }
 

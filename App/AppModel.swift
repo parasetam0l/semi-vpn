@@ -27,8 +27,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var blockWhenDisconnected = false
     @Published private(set) var connecting = false
     @Published private(set) var routingRepairPhase: RoutingRepairPhase = .idle
-    /// The list the window shows when the mode uses both.
-    @Published var listKind: ListKind = .websites
+    /// The list the window shows when the mode uses both: apps first.
+    @Published var listKind: ListKind = .apps
     /// What the window's list is filtered by.
     @Published var listSearch = ""
     @Published private(set) var diagnostics = Diagnostics()
@@ -908,7 +908,7 @@ final class AppModel: ObservableObject {
         var domains: [(name: String, subdomains: Bool, enabled: Bool)] = []
         var blockWhenDisconnected = false
         var diagnostics = Diagnostics()
-        var listKind: ListKind = .websites
+        var listKind: ListKind = .apps
         var listSearch = ""
         /// The running tunnel's routing; differs from the above for pending changes.
         var appliedRouting: SharedConfig.AppliedRouting?

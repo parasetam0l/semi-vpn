@@ -30,7 +30,7 @@ struct IPAddressView: View {
                 .font(.system(size: 13, weight: .semibold))
             SectionBox {
                 section(icon: "network", tint: .secondary, title: "Without VPN", addresses: regular, first: true)
-                section(icon: "lock.shield.fill", tint: SemiTheme.brand, title: "With VPN", addresses: vpn)
+                section(icon: "lock.shield.fill", tint: .secondary, title: "With VPN", addresses: vpn)
             }
             if let warning {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
@@ -194,7 +194,7 @@ struct IPAddressSummary: View {
     var body: some View {
         SectionBox {
             row(icon: "network", tint: .secondary, title: "Without VPN", addresses: checker.regular, first: true)
-            row(icon: "lock.shield.fill", tint: SemiTheme.brand, title: "With VPN", addresses: checker.vpn,
+            row(icon: "lock.shield.fill", tint: .secondary, title: "With VPN", addresses: checker.vpn,
                 sameAsRegular: checker.vpn.v4 != .checking && checker.vpn.v4 == checker.regular.v4)
         }
     }

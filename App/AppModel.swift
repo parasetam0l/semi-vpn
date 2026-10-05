@@ -504,6 +504,13 @@ final class AppModel: ObservableObject {
     }
 
     func setDomainEnabled(_ domain: String, enabled: Bool) {
+        #if DEBUG
+        // The preview window's switches change only what it shows.
+        if isPreview {
+            if enabled { inactiveDomains.remove(domain) } else { inactiveDomains.insert(domain) }
+            return
+        }
+        #endif
         guard !isPreview else { return }
         do {
             apply(try SharedConfig.setDomainEnabled(domain, enabled: enabled))
@@ -683,6 +690,9 @@ final class AppModel: ObservableObject {
     // MARK: - Connection
 
     func connect(credentials: TunnelSecrets.Credentials? = nil, remember: Bool = false) {
+        #if DEBUG
+        if isPreview { vpn.simulatePreviewConnection(true); return }
+        #endif
         guard !isPreview, let selectedProfile, !connecting else { return }
         connectError = nil
         connecting = true
@@ -706,6 +716,9 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        #if DEBUG
+        if isPreview { vpn.simulatePreviewConnection(false); return }
+        #endif
         guard !isPreview else { return }
         vpn.stop()
     }
@@ -959,6 +972,10 @@ final class AppModel: ObservableObject {
         diagnostics = preview.diagnostics
         listKind = preview.listKind
         listSearch = preview.listSearch
+        // The preview window's simulated connection changes the VPN's state.
+        vpn.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
     #endif
 }

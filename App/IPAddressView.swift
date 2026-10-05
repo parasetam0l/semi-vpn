@@ -272,6 +272,22 @@ final class IPAddressChecker: ObservableObject {
     private var generation = 0
 
     func refresh(vpnConnected: Bool) {
+        #if DEBUG
+        if UISnapshots.isPreviewing {
+            regular = .init(v4: .checking, v6: .checking)
+            vpn = vpnConnected ? .init(v4: .checking, v6: .checking) : .init(v4: .notConnected, v6: .notConnected)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.regular = .init(v4: .address("198.51.100.23"), v6: .none)
+                self.checkedAt = Date()
+            }
+            if vpnConnected {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self.vpn = .init(v4: .address("172.104.229.229"), v6: .none)
+                }
+            }
+            return
+        }
+        #endif
         generation += 1
         let current = generation
         regular = .init(v4: .checking, v6: .checking)

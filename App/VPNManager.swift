@@ -196,7 +196,19 @@ final class VPNManager: ObservableObject {
     }
 
     /// Connected 1:24:08 ago in UI snapshots.
-    private let previewConnectedDate = Date().addingTimeInterval(-5048)
+    private var previewConnectedDate = Date().addingTimeInterval(-5048)
+
+    /// The preview window's power button: connecting takes 2.5 s, so its
+    /// animation shows; disconnecting 1 s.
+    func simulatePreviewConnection(_ connect: Bool) {
+        guard isPreview else { return }
+        status = connect ? .connecting : .disconnecting
+        DispatchQueue.main.asyncAfter(deadline: .now() + (connect ? 2.5 : 1)) { [weak self] in
+            guard let self else { return }
+            self.previewConnectedDate = Date()
+            self.status = connect ? .connected : .disconnected
+        }
+    }
     #endif
 
     /// A preview instance must never stop the real proxy helper.

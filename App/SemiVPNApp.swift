@@ -13,6 +13,13 @@ enum SemiVPNMain {
         // `--render-ui <folder>`: draws the screens with sample data and
         // exits (Scripts/ui-snapshots.sh).
         UISnapshots.runIfRequested()
+        // `--preview-window`: only the main window, with sample data and
+        // nothing connected (Scripts/preview-window.sh).
+        if CommandLine.arguments.contains("--preview-window") {
+            UISnapshots.isPreviewing = true
+            PreviewWindowApp.main()
+            return
+        }
         #endif
         SemiVPNApp.main()
     }

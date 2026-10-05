@@ -11,6 +11,8 @@ enum UISnapshots {
     /// Set while rendering: views draw stand-ins for what offscreen
     /// rendering can't draw (Liquid Glass).
     @MainActor static var isRendering = false
+    /// Set in the preview window (PreviewWindowApp).
+    @MainActor static var isPreviewing = false
 
     static func runIfRequested() {
         let arguments = CommandLine.arguments
@@ -282,6 +284,57 @@ enum UISnapshots {
     private final class SnapshotWindow: NSWindow {
         override var isKeyWindow: Bool { true }
         override var isMainWindow: Bool { true }
+    }
+}
+/// `SemiVPN --preview-window`: the main window alone, with sample data like
+/// the user's, for trying a design before a release. Nothing connects:
+/// the power button simulates it, and no settings are written.
+struct PreviewWindowApp: App {
+    @StateObject private var model = PreviewWindowApp.makeModel()
+
+    var body: some Scene {
+        Window("SemiVPN Preview", id: "preview") {
+            MainWindowView()
+                .environmentObject(model)
+                .onAppear {
+                    NSApp.activate(ignoringOtherApps: true)
+                    ExtensionMonitor.shared.showPreview(
+                        reports: [BrowserExtension.Report(instance: "preview", browser: "Google Chrome",
+                                                          build: ChromeExtensionInstaller.bundledBuild ?? "0.4.1",
+                                                          lastSeen: Date())],
+                        expectedBuild: ChromeExtensionInstaller.bundledBuild, isPrepared: true)
+                }
+        }
+        .defaultSize(width: 400, height: 720)
+        .windowResizability(.contentSize)
+    }
+
+    @MainActor
+    private static func makeModel() -> AppModel {
+        var preview = AppModel.Preview()
+        preview.status = .disconnected
+        preview.routingMode = .selectedAppsAndBrowser
+        preview.listKind = .apps
+        preview.profiles = [
+            ("serkan.ovpn", .init(displayName: "serkan", host: "172.104.229.229", protocolName: "OpenVPN UDP")),
+            ("nyks-office.ovpn", .init(displayName: "nyks-office", host: "srv.nyks.net", protocolName: "OpenVPN TCP")),
+        ]
+        let apps: [(String, String, String, Bool)] = [
+            ("FileZilla", "org.filezilla-project.filezilla", "/Applications/FileZilla.app", true),
+            ("PhpStorm", "com.jetbrains.PhpStorm", "/Applications/PhpStorm.app", true),
+            ("Semi Test A", "com.semivpn.test.a", "/Applications/SemiTestA.app", true),
+            ("Semi Test B", "com.semivpn.test.b", "/Applications/SemiTestB.app", false),
+            ("Terminal", "com.apple.Terminal", "/System/Applications/Utilities/Terminal.app", true),
+        ]
+        preview.apps = apps.map { name, id, path, on in
+            (AppEntry(name: name, bundleIdentifier: id, signingIdentifier: id, path: path), on)
+        }
+        preview.domains = [
+            ("172.104.240.87", false, true), ("icanhazip.com", true, true), ("ip-adresim.net", true, true),
+            ("panel.galyata.com", false, false), ("server.gobritanya.com", true, true),
+            ("server.gocompanyturkiye.com", false, true), ("srv.nyks.net", false, true), ("whatsmyip.org", true, true),
+        ]
+        return AppModel(preview: preview)
     }
 }
 #endif

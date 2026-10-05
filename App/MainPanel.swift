@@ -45,6 +45,10 @@ struct MainWindowView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    #if DEBUG
+                    // The preview has no real model for Settings to use.
+                    if UISnapshots.isPreviewing { return }
+                    #endif
                     SettingsWindowController.shared.show()
                 } label: {
                     Label("Settings", systemImage: "gearshape")

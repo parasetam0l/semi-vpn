@@ -294,6 +294,8 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 
 `Scripts/ui-snapshots.sh` renders every screen with sample data (150 websites, 40 apps), in light and dark mode, into `.build/ui-snapshots` from the Debug build, without touching a running SemiVPN.
 
+`Scripts/preview-window.sh` opens the main window of the Debug build with sample data on screen, for trying a design before a release: real Liquid Glass and animations, a power button that simulates connecting, and nothing connected or installed (settings go to a scratch folder).
+
 ---
 
 ## Repository Layout
@@ -327,6 +329,7 @@ End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli
 │   ├── sparkle-sign.sh       # Signs Sparkle's helpers with the app's identity
 │   ├── verify-update-signature.swift # Checks an update against the app's key
 │   ├── ui-snapshots.sh       # Renders the screens for design review
+│   ├── preview-window.sh     # Opens the main window with sample data to try a design
 │   └── openssl-*.sh          # Locate, stage and bundle OpenSSL for Xcode
 ├── Shared/                   # Shared configurations and data models
 │   ├── SharedConfig.swift    # Routing modes, domain models, and IPC constants

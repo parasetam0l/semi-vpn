@@ -85,6 +85,15 @@ final class VPNManager: ObservableObject {
     private var statusObserver: NSObjectProtocol?
     private var tunnelManager: NETunnelProviderManager?
 
+    /// When the running tunnel connected, for how long it has been up.
+    var connectedDate: Date? {
+        guard status == .connected || status == .reasserting else { return nil }
+        #if DEBUG
+        if isPreview { return previewConnectedDate }
+        #endif
+        return tunnelManager?.connection.connectedDate
+    }
+
     static var proxyHelperAppURL: URL? {
         let bundleURL = Bundle.main.bundleURL
         let helperURL = bundleURL.appendingPathComponent("Contents/Resources/SemiProxy.app")
@@ -185,6 +194,9 @@ final class VPNManager: ObservableObject {
         hasSavedConfiguration = true
         self.appliedRouting = appliedRouting
     }
+
+    /// Connected 1:24:08 ago in UI snapshots.
+    private let previewConnectedDate = Date().addingTimeInterval(-5048)
     #endif
 
     /// A preview instance must never stop the real proxy helper.

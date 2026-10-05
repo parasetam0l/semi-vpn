@@ -134,6 +134,15 @@ final class AppModel: ObservableObject {
         isTunnelActive ? vpn.appliedRouting?.profileName : nil
     }
 
+    /// The status orb's and the hero's look.
+    var orbState: OrbState {
+        switch displayedStatus {
+        case .connected: return vpn.isReconnecting ? .changing : .connected
+        case .connecting, .reasserting, .disconnecting: return .changing
+        default: return .off
+        }
+    }
+
     var statusTitle: String {
         if vpn.isReconnecting { return "Reconnecting…" }
         switch displayedStatus {

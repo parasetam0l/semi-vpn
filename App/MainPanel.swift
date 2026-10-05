@@ -3,31 +3,34 @@ import SwiftUI
 
 // MARK: - Window
 
-/// The main window: the connection and its choices stay in place at the
-/// top; the list of apps or websites below scrolls, however long it gets.
+/// The main window: the connection on a color that shows its state, from
+/// the top of the window; the list of apps or websites in a sheet below,
+/// which scrolls however long it gets.
 struct MainWindowView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            NoticesView()
+        Group {
             if model.profiles.isEmpty {
-                WelcomeView(compact: false)
-                    .frame(maxHeight: .infinity)
+                VStack(spacing: 14) {
+                    NoticesView()
+                    WelcomeView(compact: false)
+                        .frame(maxHeight: .infinity)
+                }
+                .padding(16)
             } else {
-                ConnectionHeader(style: .window)
-                ConnectionChoices(style: .window)
-                PendingChangesNotice()
-                if model.shownListKind == nil {
-                    AllTrafficNote()
-                } else {
-                    RoutedList()
+                VStack(spacing: 0) {
+                    ConnectionHero()
+                        // Room for the color behind the sheet's corners.
+                        .padding(.bottom, ListSheet.overlap + 18)
+                        .background(HeroBackground(state: model.orbState).ignoresSafeArea(edges: .top))
+                    ListSheet()
+                        .padding(.top, -ListSheet.overlap)
                 }
             }
         }
-        .padding(16)
         .frame(width: 400)
-        .frame(minHeight: 520, idealHeight: 700, maxHeight: .infinity, alignment: .top)
+        .frame(minHeight: 600, idealHeight: 720, maxHeight: .infinity, alignment: .top)
         .background(SemiTheme.canvas)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -88,6 +91,215 @@ private struct PlainTitleBar: ViewModifier {
     }
 }
 
+/// The power button, the state and how long it has lasted, and the profile
+/// and route as menus, in white on HeroBackground.
+private struct ConnectionHero: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            PowerButton()
+            VStack(spacing: 3) {
+                Text(model.statusTitle)
+                    .font(.system(size: 24, weight: .bold))
+                subtitle
+                    .font(.system(size: 12).monospacedDigit())
+                    .opacity(0.85)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(.white)
+            HStack(spacing: 8) {
+                ProfileChip()
+                RouteChip()
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 2)
+    }
+
+    /// While connected: the server and the time connected, ticking.
+    /// Otherwise the profile and its server.
+    @ViewBuilder
+    private var subtitle: some View {
+        let profile = model.connectedProfile ?? model.selectedProfile
+        let meta = profile.map(model.profileMeta)
+        if let since = model.vpn.connectedDate, let meta {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let seconds = max(0, Int(context.date.timeIntervalSince(since)))
+                Text("\(meta.host) · \(Duration.seconds(seconds).formatted(.time(pattern: .hourMinuteSecond)))")
+            }
+        } else if let meta {
+            Text("\(meta.displayName) · \(meta.host)")
+        } else {
+            Text("Choose a profile")
+        }
+    }
+}
+
+/// Connects, cancels a connection attempt, or disconnects.
+private struct PowerButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        let status = model.displayedStatus
+        let busy = status == .connecting || status == .disconnecting || model.vpn.isReconnecting
+        Button(action: toggle) {
+            ZStack {
+                Circle().fill(.white.opacity(0.12)).frame(width: 112, height: 112)
+                Circle().fill(.white.opacity(0.2)).frame(width: 90, height: 90)
+                Circle().fill(.white).frame(width: 68, height: 68)
+                    .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+                if busy {
+                    ProgressView()
+                        .controlSize(.regular)
+                } else {
+                    Image(systemName: "power")
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(model.isConnected ? SemiTheme.brand : Color(white: 0.45))
+                }
+            }
+            .contentShape(Circle())
+        }
+        .buttonStyle(PressScaleStyle())
+        .disabled(model.selectedProfile == nil || status == .disconnecting)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private var help: String {
+        switch model.displayedStatus {
+        case .connected, .reasserting: return "Disconnect"
+        case .connecting: return "Cancel connecting"
+        case .disconnecting: return "Disconnecting…"
+        default: return "Connect"
+        }
+    }
+
+    private func toggle() {
+        switch model.displayedStatus {
+        case .connected, .reasserting, .connecting: model.disconnect()
+        default: model.connect()
+        }
+    }
+}
+
+/// A button that shrinks a little while pressed.
+private struct PressScaleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// The color behind the connection: the brand gradient while connected,
+/// gray when not, in between while it changes.
+private struct HeroBackground: View {
+    let state: OrbState
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(white: 0.55), Color(white: 0.38)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            SemiTheme.gradient
+                .opacity(state == .connected ? 1 : state == .changing ? 0.55 : 0)
+        }
+        .animation(.easeInOut(duration: 0.4), value: state)
+    }
+}
+
+/// A white capsule menu on the hero: icon, value, chevron.
+private struct HeroChip: View {
+    let icon: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .opacity(0.85)
+            Text(title)
+                .font(.system(size: 12.5, weight: .medium))
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .opacity(0.7)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(.white.opacity(0.18)))
+        .contentShape(Capsule())
+    }
+}
+
+private struct ProfileChip: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Menu {
+            ProfileMenuItems()
+        } label: {
+            HeroChip(icon: "person.crop.circle",
+                     title: model.selectedProfile.map { model.profileMeta($0).displayName } ?? "Choose a Profile")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Profile")
+    }
+}
+
+private struct RouteChip: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Menu {
+            RouteOptions()
+                .pickerStyle(.inline)
+        } label: {
+            HeroChip(icon: "arrow.triangle.branch", title: model.routingMode.choiceTitle)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(model.routingMode.choiceDetail)
+    }
+}
+
+/// The notices, a pending reconnect, and the list of apps or websites, on
+/// a sheet whose top corners round over the hero's color.
+private struct ListSheet: View {
+    static let overlap: CGFloat = 22
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            NoticesView()
+            PendingChangesNotice()
+            if model.shownListKind == nil {
+                AllTrafficNote()
+            } else {
+                RoutedList()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 18)
+        .padding(.bottom, 14)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(
+            UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22, style: .continuous)
+                .fill(SemiTheme.canvas)
+                .shadow(color: .black.opacity(0.2), radius: 10, y: -2)
+        )
+    }
+}
+
 // MARK: - Menu bar
 
 /// The menu bar panel: the connection and its choices, how many apps and
@@ -102,8 +314,8 @@ struct MenuBarPanel: View {
             if model.profiles.isEmpty {
                 WelcomeView(compact: true)
             } else {
-                ConnectionHeader(style: .menuBar)
-                ConnectionChoices(style: .menuBar)
+                ConnectionHeader()
+                ConnectionChoices()
                 PendingChangesNotice()
                 if !model.listKinds.isEmpty {
                     SectionBox {
@@ -176,11 +388,6 @@ struct MenuBarPanel: View {
 
 // MARK: - Connection
 
-/// The window and the menu bar panel differ only in their controls.
-enum PanelStyle {
-    case window, menuBar
-}
-
 /// Warnings that need the user: the network extension's approval, browser
 /// traffic outside the VPN, an outdated browser extension.
 struct NoticesView: View {
@@ -203,17 +410,16 @@ struct NoticesView: View {
     }
 }
 
-/// The status, the profile in use and the way to connect or disconnect.
+/// The menu bar panel's status, the profile in use and its switch.
 struct ConnectionHeader: View {
-    let style: PanelStyle
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
         HStack(spacing: 12) {
-            StatusOrb(state: orbState, size: style == .window ? 46 : 40)
+            StatusOrb(state: model.orbState, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.statusTitle)
-                    .font(.system(size: style == .window ? 16 : 14, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                 Text(subtitle)
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
@@ -221,25 +427,13 @@ struct ConnectionHeader: View {
                     .truncationMode(.tail)
             }
             Spacer(minLength: 8)
-            if style == .window {
-                connectButton
-            } else {
-                Toggle("Connected", isOn: Binding(
-                    get: { model.isTunnelActive },
-                    set: { $0 ? model.connect() : model.disconnect() }
-                ))
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .disabled(model.selectedProfile == nil || model.displayedStatus == .disconnecting)
-            }
-        }
-    }
-
-    private var orbState: OrbState {
-        switch model.displayedStatus {
-        case .connected: return .connected
-        case .connecting, .reasserting, .disconnecting: return .changing
-        default: return .off
+            Toggle("Connected", isOn: Binding(
+                get: { model.isTunnelActive },
+                set: { $0 ? model.connect() : model.disconnect() }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .disabled(model.selectedProfile == nil || model.displayedStatus == .disconnecting)
         }
     }
 
@@ -248,103 +442,79 @@ struct ConnectionHeader: View {
         let meta = model.profileMeta(profile)
         return "\(meta.displayName) · \(meta.host)"
     }
-
-    @ViewBuilder
-    private var connectButton: some View {
-        switch model.displayedStatus {
-        case .connected, .reasserting:
-            Button("Disconnect", role: .destructive, action: model.disconnect)
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .controlSize(.large)
-        case .connecting:
-            Button(action: model.disconnect) {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Cancel")
-                }
-            }
-            .controlSize(.large)
-        case .disconnecting:
-            Button {} label: {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Disconnecting…")
-                }
-            }
-            .controlSize(.large)
-            .disabled(true)
-        default:
-            Button { model.connect() } label: {
-                Text("Connect").padding(.horizontal, 8)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(SemiTheme.brand)
-            .controlSize(.large)
-            .disabled(model.selectedProfile == nil)
-        }
-    }
 }
 
-/// The profile and what uses the VPN.
+/// The menu bar panel's profile and route.
 struct ConnectionChoices: View {
-    let style: PanelStyle
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        SectionBox(footer: style == .window && model.pendingChanges.isEmpty ? model.routingMode.choiceDetail : nil) {
+        SectionBox {
             SectionRow(first: true) {
                 Text("Profile")
                     .lineLimit(1)
                     .fixedSize()
                 Spacer(minLength: 12)
-                profileMenu
+                Menu {
+                    ProfileMenuItems()
+                } label: {
+                    Text(model.selectedProfile.map { model.profileMeta($0).displayName } ?? "None")
+                }
+                .fixedSize()
             }
             SectionRow {
                 Text("Use VPN for")
                     .lineLimit(1)
                     .fixedSize()
                 Spacer(minLength: 12)
-                Picker("Use VPN for", selection: Binding(
-                    get: { model.routingMode },
-                    set: { model.setRoutingMode($0) }
-                )) {
-                    ForEach(SharedConfig.RoutingMode.allCases) { mode in
-                        Text(mode.choiceTitle).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize(horizontal: style == .window, vertical: false)
+                RouteOptions()
+                    .labelsHidden()
+                    .pickerStyle(.menu)
             }
         }
     }
+}
 
-    private var profileMenu: some View {
-        Menu {
-            ForEach(model.profiles, id: \.self) { name in
-                let meta = model.profileMeta(name)
-                Toggle(isOn: Binding(
-                    get: { name == model.selectedProfile },
-                    set: { if $0 { model.chooseProfile(name) } }
-                )) {
-                    Text("\(meta.displayName) — \(meta.host)")
-                }
+/// The profiles to choose from, Import Profile… and Manage Profiles….
+struct ProfileMenuItems: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ForEach(model.profiles, id: \.self) { name in
+            let meta = model.profileMeta(name)
+            Toggle(isOn: Binding(
+                get: { name == model.selectedProfile },
+                set: { if $0 { model.chooseProfile(name) } }
+            )) {
+                Text("\(meta.displayName) — \(meta.host)")
             }
-            Divider()
-            Button("Import Profile…") {
-                MenuBarController.shared?.close()
-                AppDelegate.shared?.showWindow()
-                model.showProfilePicker()
-            }
-            Button("Manage Profiles…") {
-                MenuBarController.shared?.close()
-                SettingsWindowController.shared.show(.profiles)
-            }
-        } label: {
-            Text(model.selectedProfile.map { model.profileMeta($0).displayName } ?? "None")
         }
-        .fixedSize()
+        Divider()
+        Button("Import Profile…") {
+            MenuBarController.shared?.close()
+            AppDelegate.shared?.showWindow()
+            model.showProfilePicker()
+        }
+        Button("Manage Profiles…") {
+            MenuBarController.shared?.close()
+            SettingsWindowController.shared.show(.profiles)
+        }
+    }
+}
+
+/// What uses the VPN, as a picker.
+struct RouteOptions: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Picker("Use VPN for", selection: Binding(
+            get: { model.routingMode },
+            set: { model.setRoutingMode($0) }
+        )) {
+            ForEach(SharedConfig.RoutingMode.allCases) { mode in
+                Text(mode.choiceTitle).tag(mode)
+            }
+        }
     }
 }
 
@@ -357,7 +527,7 @@ private struct AllTrafficNote: View {
                 .foregroundStyle(.secondary)
             Text("All traffic from this Mac uses the VPN.")
                 .font(.system(size: 13, weight: .medium))
-            Text("To choose apps or websites instead, change “Use VPN for”.")
+            Text("To choose apps or websites instead, change “All Apps” above.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

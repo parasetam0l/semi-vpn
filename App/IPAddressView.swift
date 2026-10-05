@@ -65,7 +65,7 @@ struct IPAddressView: View {
     }
 
     private var footer: String {
-        guard let checkedAt else { return "From icanhazip.com" }
+        guard let checkedAt else { return "From Cloudflare" }
         return "Checked at " + checkedAt.formatted(date: .omitted, time: .shortened)
     }
 
@@ -276,18 +276,24 @@ final class IPAddressChecker: ObservableObject {
         let current = generation
         regular = .init(v4: .checking, v6: .checking)
         vpn = vpnConnected ? .init(v4: .checking, v6: .checking) : .init(v4: .notConnected, v6: .notConnected)
+        // Each row shows its addresses as soon as they arrive: the lookup
+        // without the VPN takes a fraction of a second, the one through the
+        // helper longer.
         Task {
-            async let direct = PublicIPLookup.lookUp(avoidingTunnels: true)
-            async let tunneled = vpnConnected ? Self.lookUpThroughHelper() : nil
-            let (withoutVPN, withVPN) = await (direct, tunneled)
+            let withoutVPN = await PublicIPLookup.lookUp(avoidingTunnels: true)
             guard current == generation else { return }
             regular = Self.addresses(withoutVPN)
-            if vpnConnected {
-                vpn = withVPN.map(Self.addresses)
-                    ?? .init(v4: .failed("SemiVPN’s helper didn’t answer."), v6: .failed("SemiVPN’s helper didn’t answer."))
-            }
             checkedAt = Date()
-            AppLogger.log("ip check: without VPN \(withoutVPN), with VPN \(withVPN.map { "\($0)" } ?? "-")")
+            AppLogger.log("ip check: without VPN \(withoutVPN)")
+        }
+        guard vpnConnected else { return }
+        Task {
+            let withVPN = await Self.lookUpThroughHelper()
+            guard current == generation else { return }
+            vpn = withVPN.map(Self.addresses)
+                ?? .init(v4: .failed("SemiVPN’s helper didn’t answer."), v6: .failed("SemiVPN’s helper didn’t answer."))
+            checkedAt = Date()
+            AppLogger.log("ip check: with VPN \(withVPN.map { "\($0)" } ?? "-")")
         }
     }
 

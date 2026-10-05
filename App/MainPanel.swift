@@ -154,20 +154,31 @@ private struct PowerButton: View {
         let status = model.displayedStatus
         let busy = status == .connecting || status == .disconnecting || model.vpn.isReconnecting
         Button(action: toggle) {
-            ZStack {
-                Circle().fill(.white.opacity(0.12)).frame(width: 112, height: 112)
-                Circle().fill(.white.opacity(0.2)).frame(width: 90, height: 90)
-                Circle().fill(.white).frame(width: 68, height: 68)
-                    .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
-                if busy {
-                    ProgressView()
-                        .controlSize(.regular)
-                } else {
+            // While busy: the halo pulses and an arc circles the button.
+            TimelineView(.animation(paused: !busy)) { context in
+                let time = context.date.timeIntervalSinceReferenceDate
+                let pulse = busy ? (sin(time * 2 * .pi / 1.6) + 1) / 2 : 0
+                ZStack {
+                    Circle().fill(.white.opacity(0.12 + 0.08 * pulse))
+                        .frame(width: 112, height: 112)
+                        .scaleEffect(1 + 0.06 * pulse)
+                    Circle().fill(.white.opacity(0.2)).frame(width: 90, height: 90)
+                    if busy {
+                        Circle()
+                            .trim(from: 0, to: 0.28)
+                            .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(time.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360))
+                    }
+                    Circle().fill(.white).frame(width: 68, height: 68)
+                        .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
                     Image(systemName: "power")
                         .font(.system(size: 26, weight: .bold))
-                        .foregroundStyle(model.isConnected ? SemiTheme.brand : Color(white: 0.45))
+                        .foregroundStyle(model.isConnected ? SemiTheme.brand
+                                         : busy ? SemiTheme.brand.opacity(0.45 + 0.4 * pulse) : Color(white: 0.45))
                 }
             }
+            .frame(width: 118, height: 118)
             .contentShape(Circle())
         }
         .buttonStyle(PressScaleStyle())
@@ -209,7 +220,9 @@ private struct HeroBackground: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(white: 0.55), Color(white: 0.38)],
+            // Slate rather than plain gray: it stays calm, and the glass
+            // over it doesn't turn muddy.
+            LinearGradient(colors: [Color(red: 0.43, green: 0.47, blue: 0.56), Color(red: 0.27, green: 0.3, blue: 0.38)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
             SemiTheme.gradient
                 .opacity(state == .connected ? 1 : state == .changing ? 0.55 : 0)
@@ -311,11 +324,14 @@ private struct GlassListSheet: View {
     }
 }
 
-/// Liquid Glass in the shape of a rounded rectangle. UI snapshots render
-/// offscreen, where glass isn't drawn, so they get a stand-in.
+/// Liquid Glass in the shape of a rounded rectangle, tinted with the
+/// window's background so the list reads as well over gray as over color.
+/// UI snapshots render offscreen, where glass isn't drawn, so they get a
+/// stand-in.
 @available(macOS 26.0, *)
 private struct GlassSurface: ViewModifier {
     let cornerRadius: CGFloat
+    private static let glass = Glass.regular.tint(Color(nsColor: .windowBackgroundColor).opacity(0.55))
 
     func body(content: Content) -> some View {
         #if DEBUG
@@ -327,10 +343,10 @@ private struct GlassSurface: ViewModifier {
                         .strokeBorder(.white.opacity(0.35), lineWidth: 1))
             }
         } else {
-            content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            content.glassEffect(Self.glass, in: .rect(cornerRadius: cornerRadius))
         }
         #else
-        content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        content.glassEffect(Self.glass, in: .rect(cornerRadius: cornerRadius))
         #endif
     }
 }
@@ -597,7 +613,7 @@ private struct AllTrafficNote: View {
 /// Apps… or the browser extension's state, the list, and a footer with
 /// counts and actions on all of them.
 private struct RoutedList: View {
-    /// On Liquid Glass: no box around the rows, a capsule search field.
+    /// On Liquid Glass: no box around the rows.
     var onGlass = false
     @EnvironmentObject private var model: AppModel
     @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
@@ -610,13 +626,8 @@ private struct RoutedList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if model.listKinds.count > 1 {
-                Picker("List", selection: $model.listKind) {
-                    Text("Apps \(model.addedApps.count)").tag(AppModel.ListKind.apps)
-                    Text("Websites \(model.domains.count)").tag(AppModel.ListKind.websites)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: .infinity)
+                ListKindSwitch(selection: $model.listKind,
+                               apps: model.addedApps.count, websites: model.domains.count)
             }
             searchField
             if let candidate = addCandidate {
@@ -660,22 +671,17 @@ private struct RoutedList: View {
                     .help("Clear")
                 }
             }
-            .padding(.horizontal, onGlass ? 11 : 8)
-            .padding(.vertical, 6)
-            .background {
-                if onGlass {
-                    Capsule().fill(Color.primary.opacity(0.07))
-                } else {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SemiTheme.panel)
-                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
-                }
-            }
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(Capsule().fill(Color.primary.opacity(0.1)))
             if kind == .apps {
                 Button {
                     model.showAppPicker()
                 } label: {
                     Label("Add Apps…", systemImage: "plus")
                 }
+                .buttonStyle(PillButtonStyle(prominent: true))
+                .fixedSize()
             } else {
                 ExtensionStatusButton(monitor: extensionMonitor)
             }
@@ -749,13 +755,17 @@ private struct RoutedList: View {
     private var list: some View {
         List(selection: $selection) {
             if kind == .apps {
-                ForEach(filteredApps) { app in
+                let apps = filteredApps
+                ForEach(apps) { app in
                     AppListRow(app: app) { request(remove: [app.bundleIdentifier]) }
+                        .modifier(RowDivider(shown: app.id != apps.last?.id))
                         .tag(app.bundleIdentifier)
                 }
             } else {
-                ForEach(filteredDomains, id: \.self) { domain in
+                let domains = filteredDomains
+                ForEach(domains, id: \.self) { domain in
                     WebsiteListRow(domain: domain) { request(remove: [domain]) }
+                        .modifier(RowDivider(shown: domain != domains.last))
                         .tag(domain)
                 }
             }
@@ -872,7 +882,7 @@ private struct RoutedList: View {
     }
 }
 
-/// One app: icon, name, and its switch.
+/// One app: its icon, name and switch; dimmed while switched off.
 private struct AppListRow: View {
     let app: AppEntry
     let onRemove: () -> Void
@@ -880,22 +890,26 @@ private struct AppListRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        let enabled = model.isAppEnabled(app)
+        HStack(spacing: 11) {
             Image(nsImage: model.appIcon(app))
                 .resizable()
-                .frame(width: 18, height: 18)
+                .frame(width: 30, height: 30)
+                .opacity(enabled ? 1 : 0.45)
             Text(app.name)
+                .font(.system(size: 13.5, weight: .medium))
+                .foregroundStyle(enabled ? .primary : .secondary)
                 .lineLimit(1)
             Spacer(minLength: 6)
             if hovering {
                 RemoveButton(action: onRemove)
             }
             Toggle(app.name, isOn: Binding(
-                get: { model.isAppEnabled(app) },
+                get: { enabled },
                 set: { model.setApp(app, enabled: $0) }
             ))
             .toggleStyle(.switch)
-            .controlSize(.mini)
+            .controlSize(.small)
             .labelsHidden()
         }
         .padding(.vertical, 1)
@@ -904,7 +918,8 @@ private struct AppListRow: View {
     }
 }
 
-/// One website: the domain, whether subdomains are included, its switch.
+/// One website: a badge with its initial, the domain, whether subdomains
+/// are included, its switch; dimmed while switched off.
 private struct WebsiteListRow: View {
     let domain: String
     let onRemove: () -> Void
@@ -912,31 +927,167 @@ private struct WebsiteListRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text(domain)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if model.subdomainDomains.contains(domain) {
-                Text("+ subdomains")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
+        let enabled = model.isDomainEnabled(domain)
+        HStack(spacing: 11) {
+            SiteBadge(domain: domain)
+                .opacity(enabled ? 1 : 0.45)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(domain)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(enabled ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if model.subdomainDomains.contains(domain) {
+                    Text("Including subdomains")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 6)
             if hovering {
                 RemoveButton(action: onRemove)
             }
             Toggle(domain, isOn: Binding(
-                get: { model.isDomainEnabled(domain) },
+                get: { enabled },
                 set: { model.setDomainEnabled(domain, enabled: $0) }
             ))
             .toggleStyle(.switch)
-            .controlSize(.mini)
+            .controlSize(.small)
             .labelsHidden()
         }
         .padding(.vertical, 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+    }
+}
+
+/// A website's stand-in icon, as big as an app icon looks: the initial of its
+/// main name ("G" for server.gobritanya.com) on a color of its own, or a
+/// network symbol for an IP address.
+struct SiteBadge: View {
+    let domain: String
+
+    var body: some View {
+        let name = Self.mainName(of: domain)
+        // Sized like an app icon's visible shape: macOS app icons fill
+        // about 80% of their frame (824 of 1024 points), with corners of
+        // 22.5% of that.
+        ZStack {
+            RoundedRectangle(cornerRadius: 5.4, style: .continuous)
+                .fill(LinearGradient(colors: [Self.color(for: name ?? domain), Self.color(for: name ?? domain).opacity(0.75)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
+            if let name, let initial = name.first {
+                Text(String(initial).uppercased())
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "network")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: 24, height: 24)
+        .frame(width: 30, height: 30)
+    }
+
+    /// The label before the public suffix: "gobritanya" for
+    /// server.gobritanya.com, "example" for www.example.co.uk; nil for an
+    /// IP address.
+    static func mainName(of domain: String) -> String? {
+        let labels = domain.lowercased().split(separator: ".").map(String.init)
+        guard labels.count >= 2, !labels.allSatisfy({ $0.allSatisfy(\.isNumber) }), !domain.contains(":") else {
+            return nil
+        }
+        // Two-part suffixes such as co.uk and com.tr.
+        let last = labels[labels.count - 1], secondLast = labels[labels.count - 2]
+        if labels.count >= 3, last.count == 2, ["co", "com", "net", "org", "gov", "edu", "ac", "gen"].contains(secondLast) {
+            return labels[labels.count - 3]
+        }
+        return secondLast
+    }
+
+    private static let palette: [Color] = [
+        SemiTheme.brand, SemiTheme.violet, SemiTheme.cyan,
+        Color(red: 0.12, green: 0.64, blue: 0.55), Color(red: 0.95, green: 0.5, blue: 0.16),
+        Color(red: 0.9, green: 0.3, blue: 0.5), Color(red: 0.36, green: 0.36, blue: 0.85), Color(red: 0.2, green: 0.6, blue: 0.3),
+    ]
+
+    /// The same color for a name on every launch (String.hashValue isn't).
+    static func color(for name: String) -> Color {
+        let hash = name.utf8.reduce(UInt32(5381)) { ($0 &<< 5) &+ $0 &+ UInt32($1) }
+        return palette[Int(hash % UInt32(palette.count))]
+    }
+}
+
+/// A faint line under a row, from its text on: the system's separators
+/// draw black on glass.
+private struct RowDivider: ViewModifier {
+    let shown: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .listRowSeparator(.hidden)
+            .overlay(alignment: .bottom) {
+                if shown {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.1))
+                        .frame(height: 0.5)
+                        .padding(.leading, 41)
+                        .offset(y: 3)
+                }
+            }
+    }
+}
+
+/// Apps | Websites as a pill switch: icon, name and count; the selected
+/// side slides over.
+private struct ListKindSwitch: View {
+    @Binding var selection: AppModel.ListKind
+    let apps: Int
+    let websites: Int
+    @Namespace private var namespace
+
+    var body: some View {
+        HStack(spacing: 4) {
+            tab(.apps, icon: "square.grid.2x2.fill", title: "Apps", count: apps)
+            tab(.websites, icon: "globe", title: "Websites", count: websites)
+        }
+        .padding(4)
+        .background(Capsule().fill(Color.primary.opacity(0.1)))
+    }
+
+    private func tab(_ kind: AppModel.ListKind, icon: String, title: String, count: Int) -> some View {
+        let selected = selection == kind
+        return Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = kind }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .bold).monospacedDigit())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(selected ? SemiTheme.brand.opacity(0.14) : Color.primary.opacity(0.1)))
+            }
+            .foregroundStyle(selected ? SemiTheme.brand : Color.primary.opacity(0.75))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background {
+                if selected {
+                    Capsule()
+                        .fill(.white)
+                        .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
+                        .matchedGeometryEffect(id: "selected", in: namespace)
+                }
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

@@ -211,6 +211,7 @@ struct ExtensionStatusButton: View {
                     .foregroundStyle(summary == .notSetUp || summary == .notDetected ? SemiTheme.amber : summary.color)
             }
         }
+        .buttonStyle(PillButtonStyle())
         .fixedSize()
         .help(help(summary))
     }

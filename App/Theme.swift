@@ -186,3 +186,45 @@ struct SetupStep<Content: View>: View {
         }
     }
 }
+
+/// A capsule button as tall as the list's search field: `prominent` fills
+/// it with the brand gradient, otherwise a soft tint; it lightens on hover
+/// and shrinks a little while pressed.
+struct PillButtonStyle: ButtonStyle {
+    var prominent = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        PillButton(configuration: configuration, prominent: prominent)
+    }
+
+    private struct PillButton: View {
+        let configuration: ButtonStyleConfiguration
+        let prominent: Bool
+        @State private var hovering = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(prominent ? Color.white : Color.primary)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background {
+                    if prominent {
+                        Capsule()
+                            .fill(LinearGradient(colors: [SemiTheme.brand, SemiTheme.violet],
+                                                 startPoint: .leading, endPoint: .trailing))
+                            .brightness(hovering ? 0.06 : 0)
+                            .shadow(color: SemiTheme.brand.opacity(0.35), radius: 6, y: 2)
+                    } else {
+                        Capsule().fill(Color.primary.opacity(hovering ? 0.15 : 0.1))
+                    }
+                }
+                .contentShape(Capsule())
+                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .opacity(isEnabled ? 1 : 0.5)
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+                .onHover { hovering = $0 }
+        }
+    }
+}

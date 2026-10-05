@@ -13,7 +13,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let model: AppModel
     private var statusCancellable: AnyCancellable?
-    private var reconnectingCancellable: AnyCancellable?
+    private var iconCancellable: AnyCancellable?
     /// Plays MenuBarIcon.connectingFrames while the connection changes.
     private var animationTimer: Timer?
     private var animationFrame = 0
@@ -40,19 +40,15 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         statusCancellable = model.vpn.$status
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                self?.updateIcon(status)
-                self?.recheckAddresses(after: status)
-            }
-        // A restart after an update reconnects while the status reads
-        // disconnected.
-        reconnectingCancellable = model.vpn.$isReconnecting
+            .sink { [weak self] status in self?.recheckAddresses(after: status) }
+        // The icon shows the window's state: connecting from the click on,
+        // which is before Network Extension reports it, and reconnecting.
+        iconCancellable = Publishers.Merge3(model.vpn.$status.map { _ in () },
+                                            model.vpn.$isReconnecting.map { _ in () },
+                                            model.$connecting.map { _ in () })
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.updateIcon(self.model.vpn.status)
-            }
-        updateIcon(model.vpn.status)
+            .sink { [weak self] in self?.updateIcon() }
+        updateIcon()
     }
 
     func close() {
@@ -89,18 +85,17 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     // MARK: - Icon
 
-    private func updateIcon(_ status: NEVPNStatus) {
+    private func updateIcon() {
         guard let button = statusItem.button else { return }
-        let changing = [.connecting, .reasserting, .disconnecting].contains(status) || model.vpn.isReconnecting
-        if changing {
+        let state = model.orbState
+        if state == .changing {
             startAnimating()
         } else {
             stopAnimating()
-            button.image = status == .connected ? MenuBarIcon.connected : MenuBarIcon.notConnected
+            button.image = state == .connected ? MenuBarIcon.connected : MenuBarIcon.notConnected
         }
-        let label = model.vpn.isReconnecting ? "Reconnecting" : Self.label(for: status)
-        button.toolTip = "SemiVPN · \(label)"
-        button.setAccessibilityValue(label)
+        button.toolTip = "SemiVPN · \(model.statusTitle)"
+        button.setAccessibilityValue(model.statusTitle)
     }
 
     private func startAnimating() {
@@ -127,15 +122,5 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private func stopAnimating() {
         animationTimer?.invalidate()
         animationTimer = nil
-    }
-
-    private static func label(for status: NEVPNStatus) -> String {
-        switch status {
-        case .connected: return "Connected"
-        case .connecting: return "Connecting"
-        case .disconnecting: return "Disconnecting"
-        case .reasserting: return "Reconnecting"
-        default: return "Not connected"
-        }
     }
 }

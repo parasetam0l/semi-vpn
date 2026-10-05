@@ -108,7 +108,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         animationFrame = 0
         statusItem.button?.image = MenuBarIcon.connectingFrames[0]
         let timer = Timer(timeInterval: MenuBarIcon.frameDuration, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.showNextFrame() }
+            // The main run loop fires it on the main thread. Showing the
+            // frame later, in a Task, could put it over the final icon
+            // when the timer fired just before it stopped.
+            MainActor.assumeIsolated { self?.showNextFrame() }
         }
         // Common modes: it keeps moving while a menu is open.
         RunLoop.main.add(timer, forMode: .common)

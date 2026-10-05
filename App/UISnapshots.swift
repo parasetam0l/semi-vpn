@@ -305,11 +305,15 @@ enum UISnapshots {
         override var isMainWindow: Bool { true }
     }
 }
-/// `SemiVPN --preview-window`: the main window alone, with sample data like
-/// the user's, for trying a design before a release. Nothing connects:
-/// the power button simulates it, and no settings are written.
+/// `SemiVPN --preview-window`: the main window and a menu bar item, with
+/// sample data like the user's, for trying a design before a release.
+/// Nothing connects: the power button simulates it, and no settings are
+/// written.
 struct PreviewWindowApp: App {
     @StateObject private var model = PreviewWindowApp.makeModel()
+    /// The preview's own menu bar item, beside a running SemiVPN's: it
+    /// follows the window's simulated connection.
+    @MainActor private static var menuBar: MenuBarController?
 
     var body: some Scene {
         Window("SemiVPN Preview", id: "preview") {
@@ -317,6 +321,9 @@ struct PreviewWindowApp: App {
                 .environmentObject(model)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
+                    if Self.menuBar == nil {
+                        Self.menuBar = MenuBarController(model: model)
+                    }
                     ExtensionMonitor.shared.showPreview(
                         reports: [BrowserExtension.Report(instance: "preview", browser: "Google Chrome",
                                                           build: ChromeExtensionInstaller.bundledBuild ?? "0.4.1",

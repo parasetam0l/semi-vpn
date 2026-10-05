@@ -91,6 +91,105 @@ static void set_error(char *err, size_t err_len, const char *prefix)
     snprintf(err, err_len, "%s: %s", prefix, detail);
 }
 
+/* Appends `len` bytes of `text` to `out` (capacity `cap`, `*used` bytes so
+ * far), after a ':' unless it is the first entry. */
+static void
+append_cipher(char *out, size_t cap, size_t *used, const char *text, size_t len)
+{
+    if (*used > 0 && *used + 1 < cap)
+    {
+        out[(*used)++] = ':';
+    }
+    if (*used + len >= cap)
+    {
+        len = cap - *used - 1;
+    }
+    memcpy(out + *used, text, len);
+    *used += len;
+    out[*used] = '\0';
+}
+
+/*
+ * tls-cipher the way OpenVPN reads it: a ':'-separated TLS 1.2 list whose
+ * IANA names ("TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256", the form OpenVPN
+ * documents and openvpn-install writes) become OpenSSL names
+ * ("ECDHE-ECDSA-AES128-GCM-SHA256"). OpenSSL knows the standard name of
+ * every suite it supports, so no table is needed. Other entries (OpenSSL
+ * names, keywords such as DEFAULT or !aNULL) pass through unchanged.
+ * Returns a malloc'ed string, or NULL when out of memory.
+ */
+static char *
+openssl_cipher_list(const char *list)
+{
+    size_t entries = 1;
+    for (const char *p = list; *p; p++)
+    {
+        entries += *p == ':';
+    }
+    /* OpenSSL names are shorter than 64 characters. */
+    size_t cap = strlen(list) + entries * 64 + 1;
+    char *out = calloc(1, cap);
+    if (!out)
+    {
+        return NULL;
+    }
+    size_t used = 0;
+    const char *entry = list;
+    for (;;)
+    {
+        size_t len = strcspn(entry, ":");
+        const char *name = NULL;
+        char standard[128];
+        if (len > 4 && len < sizeof(standard) && strncmp(entry, "TLS-", 4) == 0)
+        {
+            /* IANA names use '_' where OpenVPN's use '-'. */
+            for (size_t i = 0; i < len; i++)
+            {
+                standard[i] = entry[i] == '-' ? '_' : entry[i];
+            }
+            standard[len] = '\0';
+            const char *found = OPENSSL_cipher_name(standard);
+            if (found && strcmp(found, "(NONE)") != 0)
+            {
+                name = found;
+            }
+        }
+        if (name)
+        {
+            append_cipher(out, cap, &used, name, strlen(name));
+        }
+        else if (len > 0)
+        {
+            append_cipher(out, cap, &used, entry, len);
+        }
+        if (entry[len] == '\0')
+        {
+            break;
+        }
+        entry += len + 1;
+    }
+    return out;
+}
+
+/* tls-ciphersuites (TLS 1.3): OpenVPN also accepts '-' for OpenSSL's '_'
+ * ("TLS-AES-256-GCM-SHA384"). Returns a malloc'ed string, or NULL. */
+static char *
+openssl_ciphersuites(const char *list)
+{
+    char *out = strdup(list);
+    if (out)
+    {
+        for (char *p = out; *p; p++)
+        {
+            if (*p == '-')
+            {
+                *p = '_';
+            }
+        }
+    }
+    return out;
+}
+
 /* Adds every certificate of a PEM bundle to the context's chain. */
 static int
 add_chain_certs(SSL_CTX *ctx, BIO *bio)
@@ -145,17 +244,37 @@ ovpn_tls_ctx_new(const ovpn_tls_config *config, char *err, size_t err_len)
     SSL_CTX_set_min_proto_version(t->ctx, min_version);
     SSL_CTX_set_max_proto_version(t->ctx, TLS1_3_VERSION);
 
-    if (config->cipher_list && config->cipher_list[0]
-        && SSL_CTX_set_cipher_list(t->ctx, config->cipher_list) != 1)
+    if (config->cipher_list && config->cipher_list[0])
     {
-        set_error(err, err_len, "tls-cipher");
-        goto fail;
+        char *list = openssl_cipher_list(config->cipher_list);
+        int ok = list && SSL_CTX_set_cipher_list(t->ctx, list) == 1;
+        free(list);
+        if (!ok)
+        {
+            ERR_clear_error();
+            if (err && err_len)
+            {
+                snprintf(err, err_len, "tls-cipher: none of \"%s\" is a cipher this version supports",
+                         config->cipher_list);
+            }
+            goto fail;
+        }
     }
-    if (config->ciphersuites && config->ciphersuites[0]
-        && SSL_CTX_set_ciphersuites(t->ctx, config->ciphersuites) != 1)
+    if (config->ciphersuites && config->ciphersuites[0])
     {
-        set_error(err, err_len, "tls-ciphersuites");
-        goto fail;
+        char *suites = openssl_ciphersuites(config->ciphersuites);
+        int ok = suites && SSL_CTX_set_ciphersuites(t->ctx, suites) == 1;
+        free(suites);
+        if (!ok)
+        {
+            ERR_clear_error();
+            if (err && err_len)
+            {
+                snprintf(err, err_len, "tls-ciphersuites: none of \"%s\" is a TLS 1.3 suite this version supports",
+                         config->ciphersuites);
+            }
+            goto fail;
+        }
     }
 
     /* NSS key log for debugging the TLS stream */

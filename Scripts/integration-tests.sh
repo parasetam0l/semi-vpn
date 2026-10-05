@@ -482,6 +482,30 @@ hand-window 3
 tls-version-min 1.3
 EOF
 
+# tls-cipher only applies up to TLS 1.2, so these servers stop there. Like
+# OpenVPN, SemiVPN accepts IANA names (what openvpn-install and current
+# OpenVPN docs write), OpenSSL names and lists mixing both.
+run_case tls-cipher-iana-name "ready;serverlog:TLSv1.2.*ECDHE-ECDSA-AES128-GCM-SHA256" "--tls-version-max 1.2" "" <<'EOF'
+proto udp
+tls-cipher TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256
+EOF
+
+run_case tls-cipher-openssl-name "ready;serverlog:TLSv1.2.*ECDHE-ECDSA-AES256-GCM-SHA384" "--tls-version-max 1.2" "" <<'EOF'
+proto udp
+tls-cipher ECDHE-ECDSA-AES256-GCM-SHA384
+EOF
+
+# The server accepts only the suite named in IANA form here.
+run_case tls-cipher-mixed-list "ready;serverlog:TLSv1.2.*ECDHE-ECDSA-CHACHA20-POLY1305" "--tls-version-max 1.2 --tls-cipher ECDHE-ECDSA-CHACHA20-POLY1305" "" <<'EOF'
+proto udp
+tls-cipher TLS-ECDHE-ECDSA-WITH-CHACHA20-POLY1305-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384
+EOF
+
+run_case tls-cipher-unknown "fail:tls-cipher" "" "" <<'EOF'
+proto udp
+tls-cipher TLS-NOT-A-REAL-CIPHER
+EOF
+
 # MARK: Connection state machine
 
 AUTH_SERVER="--script-security 2 --auth-user-pass-verify verify-pass.sh via-file"

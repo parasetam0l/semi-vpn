@@ -109,7 +109,7 @@ SemiVPN is divided into modular subsystems across the core protocol library, sys
 
 The wire-protocol engine written from scratch against OpenVPN 2.6/2.7 specifications:
 - **Transport Layer**: UDP and TCP support (`proto tcp`, uint16 length-prefixed framing, partial packet buffering).
-- **Control Channel**: TLS 1.2 and 1.3 through an OpenSSL memory-BIO abstraction layer; `tls-auth` (any `auth` digest, SHA1 by default, all `key-direction` modes), `tls-crypt`, `tls-crypt-v2` and dynamic tls-crypt for renegotiations; a reliable layer with a six-packet send window, OpenVPN-style acknowledgements and replay protection of wrapped packets.
+- **Control Channel**: TLS 1.2 and 1.3 through an OpenSSL memory-BIO abstraction layer; `tls-cipher` and `tls-ciphersuites` read like OpenVPN reads them (IANA names such as `TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256` become OpenSSL names, which also work); `tls-auth` (any `auth` digest, SHA1 by default, all `key-direction` modes), `tls-crypt`, `tls-crypt-v2` and dynamic tls-crypt for renegotiations; a reliable layer with a six-packet send window, OpenVPN-style acknowledgements and replay protection of wrapped packets.
 - **Key Exchange**: `key_method_2` (length-prefixed strings), RFC 5705 Exported Keying Material (EKM) for OpenVPN 2.7 layouts, and classic PRF for 2.4/2.5 server layouts.
 - **Data Channel**: AEAD AES-GCM and AES-CBC + HMAC framing, sliding-window replay protection (default window 64, honoring custom `replay-window` directives), keepalive ping/pong, and the OpenVPN 2.7 **AEAD-epoch** format (8-byte epoch packet-id, ciphertext-then-tag layout, `OVPN-Expand-Label` keys) when negotiated via `protocol-flags ... aead-epoch`.
 - **Push Option Parsing**: `PUSH_REPLY` directives including continuations (cipher, ifconfig and topology, `route`/`route-ipv6`, `redirect-gateway`, `dns` and `dhcp-option` DNS/DOMAIN, tun-mtu, peer-id, protocol-flags, reneg-sec, auth-token, block-ipv6), plus AUTH_FAILED (incl. TEMP), AUTH_PENDING, RESTART, HALT, EXIT and INFO messages.
@@ -290,7 +290,7 @@ Executes 71 unit tests covering:
 - TCP packet framing, buffering, and fragmentation
 - Profile parsing (protocols, remotes, quoting, file inlining, unsupported features) and `PUSH_REPLY`/control-message parsing
 
-End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 49 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (18 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
+End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 53 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (18 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
 
 `Scripts/ui-snapshots.sh` renders every screen with sample data (150 websites, 40 apps), in light and dark mode, into `.build/ui-snapshots` from the Debug build, without touching a running SemiVPN.
 

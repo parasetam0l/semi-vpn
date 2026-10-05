@@ -506,6 +506,33 @@ proto udp
 tls-cipher TLS-NOT-A-REAL-CIPHER
 EOF
 
+# A client profile as openvpn-install (angristan) writes it, against a
+# server with IPv6 enabled: tls-crypt, an IANA tls-cipher, Windows-only
+# options it marks as ignorable, and pushed IPv6 addresses and routes.
+IPV6_SERVER="--ifconfig-ipv6 fd77::1/64 fd77::2 --ifconfig-ipv6-pool fd77::1000/64 --push 'route-ipv6 2000::/3' --push 'redirect-gateway ipv6'"
+run_case openvpn-install-ipv6-profile "ready;clientlog:pushed ipv6: ip=fd77::1000/64 routes=1 redirect=true" "--tls-crypt tc.key --tls-version-max 1.2 --data-ciphers AES-128-GCM --auth SHA256 $IPV6_SERVER" "" <<EOF
+proto udp
+explicit-exit-notify
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+verify-x509-name semi-server name
+auth SHA256
+auth-nocache
+cipher AES-128-GCM
+tls-client
+tls-version-min 1.2
+tls-cipher TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256
+ignore-unknown-option block-outside-dns
+setenv opt block-outside-dns # Prevent Windows 10 DNS leak
+verb 3
+<tls-crypt>
+$(cat tc.key)
+</tls-crypt>
+EOF
+
 # MARK: Connection state machine
 
 AUTH_SERVER="--script-security 2 --auth-user-pass-verify verify-pass.sh via-file"

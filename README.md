@@ -290,7 +290,7 @@ Executes 71 unit tests covering:
 - TCP packet framing, buffering, and fragmentation
 - Profile parsing (protocols, remotes, quoting, file inlining, unsupported features) and `PUSH_REPLY`/control-message parsing
 
-End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 53 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (18 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
+End-to-end tests (see [Integration Tests](#integration-tests)) connect `ovpn-cli` to a real OpenVPN server in 54 scenarios, `Scripts/proxy-tests.sh` tests the browser proxy and its control API (18 checks) against an isolated SemiProxy instance, and `Scripts/extension-tests.mjs` tests the extension's self-update logic.
 
 `Scripts/ui-snapshots.sh` renders every screen with sample data (150 websites, 40 apps), in light and dark mode, into `.build/ui-snapshots` from the Debug build, without touching a running SemiVPN.
 

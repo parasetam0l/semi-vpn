@@ -195,6 +195,9 @@ while true {
             print("SUCCESS: tunnel established")
             if let pushed = connection.pushedOptions {
                 print("pushed: ip=\(pushed.ifconfigLocal ?? "-") routes=\(pushed.routes.count) dns=\(pushed.dnsServers.joined(separator: " ")) search=\(pushed.searchDomains.joined(separator: " ")) redirect=\(pushed.redirectGateway) mtu=\(pushed.tunMTU.map(String.init) ?? "-")")
+                if let ipv6 = pushed.ifconfigIPv6Local {
+                    print("pushed ipv6: ip=\(ipv6)/\(pushed.ifconfigIPv6Netbits ?? 64) routes=\(pushed.routesIPv6.count) redirect=\(pushed.redirectGatewayIPv6)")
+                }
             }
             guard options.hold != nil else {
                 exit(0)

@@ -35,6 +35,25 @@ enum UISnapshots {
     @MainActor
     private static var screens: [Screen] {
         [
+            Screen(name: "menubar-icons", width: 420) {
+                AnyView(HStack(spacing: 28) {
+                    ForEach(Array([("Not connected", MenuBarIcon.notConnected),
+                                   ("Connecting", MenuBarIcon.connectingFrames[7]),
+                                   ("Connected", MenuBarIcon.connected)].enumerated()), id: \.offset) { _, item in
+                        VStack(spacing: 8) {
+                            Image(nsImage: item.1)
+                                .renderingMode(.template)
+                                .resizable()
+                                .frame(width: 90, height: 90)
+                            HStack(spacing: 6) {
+                                Image(nsImage: item.1).renderingMode(.template)
+                                Text(item.0).font(.system(size: 12)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .padding(24))
+            },
             Screen(name: "window-connected-websites", width: 400, height: 760) {
                 window(AppModel(preview: sample(status: .connected, mode: .browserOnly)))
             },

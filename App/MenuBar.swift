@@ -13,6 +13,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let model: AppModel
     private var statusCancellable: AnyCancellable?
+    private var reconnectingCancellable: AnyCancellable?
+    /// Plays MenuBarIcon.connectingFrames while the connection changes.
+    private var animationTimer: Timer?
+    private var animationFrame = 0
 
     init(model: AppModel) {
         self.model = model
@@ -40,6 +44,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 self?.updateIcon(status)
                 self?.recheckAddresses(after: status)
             }
+        // A restart after an update reconnects while the status reads
+        // disconnected.
+        reconnectingCancellable = model.vpn.$isReconnecting
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.updateIcon(self.model.vpn.status)
+            }
         updateIcon(model.vpn.status)
     }
 
@@ -53,7 +65,13 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             return
         }
         model.refresh()
+        #if DEBUG
+        // The preview shows a sample extension state; refreshing would
+        // read the scratch folder's.
+        if !UISnapshots.isPreviewing { ExtensionMonitor.shared.refresh() }
+        #else
         ExtensionMonitor.shared.refresh()
+        #endif
         IPAddressChecker.shared.refresh(vpnConnected: model.vpn.status == .connected)
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         // Take key focus so the panel's controls respond at once and it
@@ -73,11 +91,39 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private func updateIcon(_ status: NEVPNStatus) {
         guard let button = statusItem.button else { return }
-        button.image = Self.image(for: status)
-        button.image?.isTemplate = true
-        let label = Self.label(for: status)
+        let changing = [.connecting, .reasserting, .disconnecting].contains(status) || model.vpn.isReconnecting
+        if changing {
+            startAnimating()
+        } else {
+            stopAnimating()
+            button.image = status == .connected ? MenuBarIcon.connected : MenuBarIcon.notConnected
+        }
+        let label = model.vpn.isReconnecting ? "Reconnecting" : Self.label(for: status)
         button.toolTip = "SemiVPN · \(label)"
         button.setAccessibilityValue(label)
+    }
+
+    private func startAnimating() {
+        guard animationTimer == nil else { return }
+        animationFrame = 0
+        statusItem.button?.image = MenuBarIcon.connectingFrames[0]
+        let timer = Timer(timeInterval: MenuBarIcon.frameDuration, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.showNextFrame() }
+        }
+        // Common modes: it keeps moving while a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+
+    private func showNextFrame() {
+        let frames = MenuBarIcon.connectingFrames
+        animationFrame = (animationFrame + 1) % frames.count
+        statusItem.button?.image = frames[animationFrame]
+    }
+
+    private func stopAnimating() {
+        animationTimer?.invalidate()
+        animationTimer = nil
     }
 
     private static func label(for status: NEVPNStatus) -> String {
@@ -88,46 +134,5 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         case .reasserting: return "Reconnecting"
         default: return "Not connected"
         }
-    }
-
-    private static func image(for status: NEVPNStatus) -> NSImage? {
-        switch status {
-        case .connected:
-            return symbol("lock.shield.fill")
-        case .connecting, .reasserting, .disconnecting:
-            return composed(base: "lock.shield.fill", overlay: "arrow.triangle.2.circlepath")
-        default:
-            return symbol("lock.shield")
-        }
-    }
-
-    private static func symbol(_ name: String) -> NSImage? {
-        let configuration = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: "SemiVPN")?
-            .withSymbolConfiguration(configuration)
-        image?.isTemplate = true
-        return image
-    }
-
-    /// The shield at the same size as the other states, with a small
-    /// arrows mark inside it.
-    private static func composed(base: String, overlay: String) -> NSImage? {
-        let shieldConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        let overlayConfiguration = NSImage.SymbolConfiguration(pointSize: 7, weight: .semibold)
-        guard let shield = NSImage(systemSymbolName: base, accessibilityDescription: nil)?
-                .withSymbolConfiguration(shieldConfiguration),
-              let mark = NSImage(systemSymbolName: overlay, accessibilityDescription: nil)?
-                .withSymbolConfiguration(overlayConfiguration) else {
-            return symbol("shield")
-        }
-        let canvas = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { _ in
-            shield.draw(in: NSRect(x: 0, y: 0, width: 16, height: 16),
-                        from: .zero, operation: .sourceOver, fraction: 1)
-            mark.draw(in: NSRect(x: 4.5, y: 4.5, width: 7, height: 7),
-                      from: .zero, operation: .sourceOver, fraction: 1)
-            return true
-        }
-        canvas.isTemplate = true
-        return canvas
     }
 }

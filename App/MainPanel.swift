@@ -18,6 +18,13 @@ struct MainWindowView: View {
                         .frame(maxHeight: .infinity)
                 }
                 .padding(16)
+            } else if #available(macOS 26.0, *) {
+                // The color fills the window; the list sits on glass over it.
+                VStack(spacing: 16) {
+                    ConnectionHero()
+                    GlassListSheet()
+                }
+                .background(HeroBackground(state: model.orbState).ignoresSafeArea())
             } else {
                 VStack(spacing: 0) {
                     ConnectionHero()
@@ -272,10 +279,9 @@ private struct RouteChip: View {
     }
 }
 
-/// The notices, a pending reconnect, and the list of apps or websites, on
-/// a sheet whose top corners round over the hero's color.
-private struct ListSheet: View {
-    static let overlap: CGFloat = 22
+/// The notices, a pending reconnect, and the list of apps or websites.
+private struct ListSheetContent: View {
+    var onGlass = false
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
@@ -285,9 +291,57 @@ private struct ListSheet: View {
             if model.shownListKind == nil {
                 AllTrafficNote()
             } else {
-                RoutedList()
+                RoutedList(onGlass: onGlass)
             }
         }
+    }
+}
+
+/// The list on Liquid Glass over the window's color, inset from its edges;
+/// the count and the ⋯ menu at its bottom. macOS 26 and later.
+@available(macOS 26.0, *)
+private struct GlassListSheet: View {
+    var body: some View {
+        ListSheetContent(onGlass: true)
+            .padding(14)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .modifier(GlassSurface(cornerRadius: 24))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+    }
+}
+
+/// Liquid Glass in the shape of a rounded rectangle. UI snapshots render
+/// offscreen, where glass isn't drawn, so they get a stand-in.
+@available(macOS 26.0, *)
+private struct GlassSurface: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if UISnapshots.isRendering {
+            content.background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.background.opacity(0.55))
+                    .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(.white.opacity(0.35), lineWidth: 1))
+            }
+        } else {
+            content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        }
+        #else
+        content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        #endif
+    }
+}
+
+/// ListSheetContent on a sheet whose top corners round over the hero's
+/// color: before macOS 26, without glass.
+private struct ListSheet: View {
+    static let overlap: CGFloat = 22
+
+    var body: some View {
+        ListSheetContent()
         .padding(.horizontal, 16)
         .padding(.top, 18)
         .padding(.bottom, 14)
@@ -543,6 +597,8 @@ private struct AllTrafficNote: View {
 /// Apps… or the browser extension's state, the list, and a footer with
 /// counts and actions on all of them.
 private struct RoutedList: View {
+    /// On Liquid Glass: no box around the rows, a capsule search field.
+    var onGlass = false
     @EnvironmentObject private var model: AppModel
     @ObservedObject private var extensionMonitor = ExtensionMonitor.shared
     @State private var selection: Set<String> = []
@@ -604,10 +660,16 @@ private struct RoutedList: View {
                     .help("Clear")
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, onGlass ? 11 : 8)
             .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SemiTheme.panel))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+            .background {
+                if onGlass {
+                    Capsule().fill(Color.primary.opacity(0.07))
+                } else {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SemiTheme.panel)
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+                }
+            }
             if kind == .apps {
                 Button {
                     model.showAppPicker()
@@ -700,9 +762,10 @@ private struct RoutedList: View {
         }
         .listStyle(.inset(alternatesRowBackgrounds: false))
         .scrollContentBackground(.hidden)
-        .background(SemiTheme.panel)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(SemiTheme.line, lineWidth: 0.5))
+        .background(onGlass ? Color.clear : SemiTheme.panel)
+        .clipShape(RoundedRectangle(cornerRadius: onGlass ? 12 : 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(SemiTheme.line, lineWidth: onGlass ? 0 : 0.5))
         .overlay { emptyState }
         .frame(minHeight: 160, maxHeight: .infinity)
         .contextMenu(forSelectionType: String.self) { items in

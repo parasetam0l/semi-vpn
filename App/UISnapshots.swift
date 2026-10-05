@@ -8,6 +8,10 @@ import SwiftUI
 /// (Scripts/ui-snapshots.sh). Nothing on the system is read or changed, and
 /// no window appears.
 enum UISnapshots {
+    /// Set while rendering: views draw stand-ins for what offscreen
+    /// rendering can't draw (Liquid Glass).
+    @MainActor static var isRendering = false
+
     static func runIfRequested() {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--render-ui"), index + 1 < arguments.count else { return }
@@ -232,6 +236,7 @@ enum UISnapshots {
     @MainActor
     private static func render(into folder: URL) {
         NSApplication.shared.setActivationPolicy(.prohibited)
+        isRendering = true
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]
         for screen in screens {

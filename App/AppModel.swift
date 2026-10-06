@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Network
 import NetworkExtension
 import OpenVPNCore
 import SwiftUI
@@ -54,6 +55,9 @@ final class AppModel: ObservableObject {
     }
 
     private var cancellables: Set<AnyCancellable> = []
+    /// Connect at startup, waiting for the network; Connect and Disconnect
+    /// cancel it.
+    private var launchConnectTask: Task<Void, Never>?
     private let isPreview: Bool
     private var previewMeta: [String: ProfileMeta] = [:]
     private var previewIcons: [String: NSImage] = [:]
@@ -694,6 +698,7 @@ final class AppModel: ObservableObject {
         if isPreview { vpn.simulatePreviewConnection(true); return }
         #endif
         guard !isPreview, let selectedProfile, !connecting else { return }
+        launchConnectTask?.cancel()
         connectError = nil
         connecting = true
         AppLogger.log("connect requested: profile=\(selectedProfile) mode=\(routingMode.rawValue) apps=\(selectedApps.count)")
@@ -720,7 +725,36 @@ final class AppModel: ObservableObject {
         if isPreview { vpn.simulatePreviewConnection(false); return }
         #endif
         guard !isPreview else { return }
+        launchConnectTask?.cancel()
         vpn.stop()
+    }
+
+    /// The profile connected last, which Connect at startup uses; the
+    /// selected one when that profile is gone or none connected yet.
+    var lastConnectedProfile: String? {
+        if let name = vpn.appliedRouting?.profileName, profiles.contains(name) { return name }
+        return selectedProfile
+    }
+
+    /// Connect at startup (Settings → General): connects to the profile
+    /// connected last once the Mac is online, which at login can be a few
+    /// seconds after SemiVPN opens. Nothing happens when the tunnel already
+    /// runs, for example started by per-app on-demand.
+    func connectAtLaunch() {
+        guard !isPreview else { return }
+        launchConnectTask = Task {
+            await vpn.waitUntilRestored()
+            guard vpn.status == .disconnected || vpn.status == .invalid else {
+                AppLogger.log("connect at startup: the tunnel is already \(vpn.status.rawValue)")
+                return
+            }
+            for await path in NWPathMonitor() where path.status == .satisfied { break }
+            guard !Task.isCancelled, vpn.status == .disconnected || vpn.status == .invalid,
+                  !vpn.isReconnecting, let profile = lastConnectedProfile else { return }
+            AppLogger.log("connect at startup: \(profile)")
+            chooseProfile(profile)
+            connect()
+        }
     }
 
     /// macOS stopped the tunnel to replace the network extension with the

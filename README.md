@@ -152,7 +152,7 @@ An embedded accessory application (`com.semivpn.proxy`):
 A SwiftUI app with one window, a menu bar panel and a Settings window, all driven by one shared model (`AppModel`):
 - The connection, the profile and the routing mode, with Reconnect for changes made while connected.
 - A searchable list of the apps or websites that use the VPN, with bulk changes and plain-text import and export.
-- Settings: login item, fail-closed websites, updates, logging, profile management with credential prompts and a `.ovpn` scanner, the browser extension, and diagnostics with Repair VPN Routing.
+- Settings: login item with Connect automatically at startup (to the profile connected last, once the Mac is online; not right after an update), fail-closed websites, updates, logging, profile management with credential prompts and a `.ovpn` scanner, the browser extension, and diagnostics with Repair VPN Routing.
 - Updates through Sparkle from GitHub Releases.
 
 ---

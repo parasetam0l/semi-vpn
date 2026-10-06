@@ -38,6 +38,8 @@ final class VPNManager: ObservableObject {
     /// Credentials entered for this connection without saving them, so a
     /// reconnect doesn't ask again. Cleared by Disconnect.
     private var sessionCredentials: (credentials: TunnelSecrets.Credentials, remember: Bool)?
+    /// Reads the status of a tunnel that macOS may still be running.
+    private var restoreTask: Task<Void, Never>?
 
     /// What a profile needs before it can connect.
     struct CredentialRequest: Identifiable, Equatable {
@@ -181,9 +183,14 @@ final class VPNManager: ObservableObject {
         ensureProxyHelperRunning()
         loadSelection()
         updateProxyAvailability()
-        Task { [weak self] in
+        restoreTask = Task { [weak self] in
             await self?.restoreSavedManagerStatus()
         }
+    }
+
+    /// Returns once `status` shows the saved tunnel's state, after launch.
+    func waitUntilRestored() async {
+        await restoreTask?.value
     }
 
     #if DEBUG

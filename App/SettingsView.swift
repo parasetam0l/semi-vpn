@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 /// The Settings window, with its tabs in the toolbar. An AppKit window so it
@@ -94,19 +95,33 @@ private struct GeneralSettings: View {
     @ObservedObject private var updater = AppUpdater.shared
     @State private var launchAtLogin = AppDelegate.shared?.launchAtLoginEnabled ?? false
     @State private var launchAtLoginError: String?
+    @State private var connectAtLaunch = AppDelegate.shared?.connectAtLaunchEnabled ?? false
     @State private var detailedLogging = AppLogger.enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SectionBox(footer: launchAtLoginError
-                       ?? AppDelegate.shared?.launchAtLoginStatusDescription
-                       ?? "SemiVPN keeps running in the menu bar when you close its window.") {
+            SectionBox(footer: loginFooter) {
                 SectionRow(first: true) {
                     Text("Open SemiVPN at login")
                     Spacer()
                     Toggle("Open SemiVPN at login", isOn: Binding(get: { launchAtLogin }, set: setLaunchAtLogin))
                         .toggleStyle(.switch)
                         .labelsHidden()
+                }
+                if launchAtLogin {
+                    SectionRow {
+                        Text("Connect automatically at startup")
+                        Spacer()
+                        Toggle("Connect automatically at startup", isOn: Binding(
+                            get: { connectAtLaunch },
+                            set: {
+                                connectAtLaunch = $0
+                                AppDelegate.shared?.setConnectAtLaunch($0)
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                    }
                 }
             }
             SectionBox(title: "Updates", footer: updatesFooter) {
@@ -163,6 +178,19 @@ private struct GeneralSettings: View {
                 }
             }
         }
+    }
+
+    private var loginFooter: String {
+        if let launchAtLoginError { return launchAtLoginError }
+        guard let appDelegate = AppDelegate.shared else {
+            return "SemiVPN keeps running in the menu bar when you close its window."
+        }
+        guard launchAtLogin, connectAtLaunch, SMAppService.mainApp.status == .enabled else {
+            return appDelegate.launchAtLoginStatusDescription
+        }
+        let profile = model.lastConnectedProfile.map { "“\(model.profileMeta($0).displayName)”" }
+        return "SemiVPN opens when you log in, keeps running in the menu bar and connects to "
+            + (profile.map { "\($0), the profile you connected to last." } ?? "the profile you connected to last.")
     }
 
     private var updatesFooter: String {

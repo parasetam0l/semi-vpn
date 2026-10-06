@@ -103,6 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     private static let launchAtLoginPreferenceKey = "launchAtLoginEnabled"
+    private static let connectAtLaunchPreferenceKey = "connectAtLaunchEnabled"
+    private static let lastLaunchedBuildKey = "lastLaunchedBuild"
 
     private var menuBar: MenuBarController?
     private var statusCancellable: AnyCancellable?
@@ -132,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         // Installs the tunnel's system extension, or replaces it after an
         // app update (a no-op when that build is already active).
         SystemExtensionInstaller.shared.activate()
+        connectAtLaunchIfWanted(model)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if let window = self.findMainWindow() {
@@ -190,6 +193,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             AppLogger.log("launch at login update failed: \(error.localizedDescription)")
             return .failure(error)
         }
+    }
+
+    /// Connect at startup, shown under Open SemiVPN at login and only used
+    /// with it.
+    var connectAtLaunchEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.connectAtLaunchPreferenceKey)
+    }
+
+    func setConnectAtLaunch(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.connectAtLaunchPreferenceKey)
+        AppLogger.log("connect at startup \(enabled ? "enabled" : "disabled")")
+    }
+
+    /// Not after an update, which relaunches SemiVPN: a tunnel that was
+    /// running starts again by itself (see VPNManager.extensionWillBeReplaced),
+    /// and one that was off stays off.
+    @MainActor
+    private func connectAtLaunchIfWanted(_ model: AppModel) {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        let previousBuild = UserDefaults.standard.string(forKey: Self.lastLaunchedBuildKey)
+        UserDefaults.standard.set(build, forKey: Self.lastLaunchedBuildKey)
+        guard launchAtLoginEnabled, connectAtLaunchEnabled else { return }
+        if let previousBuild, previousBuild != build {
+            AppLogger.log("connect at startup: skipped, SemiVPN was updated (\(previousBuild) → \(build ?? "?"))")
+            return
+        }
+        model.connectAtLaunch()
     }
 
     private func synchronizeLaunchAtLogin() {
